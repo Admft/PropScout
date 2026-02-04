@@ -1,55 +1,87 @@
 import os
-import datetime
+import requests
 from dotenv import load_dotenv
-from azure.cosmos import CosmosClient, PartitionKey, exceptions
+from apify_client import ApifyClient
 
-# 1. Load environment variables
+# Load secrets
 load_dotenv()
+RENTCAST_KEY = os.getenv("RENTCAST_API_KEY")
+APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
 
-ENDPOINT = os.getenv("COSMOS_ENDPOINT")
-KEY = os.getenv("COSMOS_KEY")
-DATABASE_NAME = "propscout-db"  # We will create/use this specific DB
-CONTAINER_NAME = "health_checks"
+# ---------------------------------------------------------
+# DFW MARKET CONFIGURATION (Wylie, TX)
+# ---------------------------------------------------------
+# We are testing with a real active/sold listing in Wylie to prove DFW compatibility.
+TEST_ADDRESS = "1200 Woodbridge Pkwy, Wylie, TX 75098"
+TEST_ZILLOW_URL = "https://www.zillow.com/homedetails/1200-Woodbridge-Pkwy-Wylie-TX-75098/26936553_zpid/"
 
-def run_verification():
-    print("🚀 Starting Connectivity Test...")
-
-    if not ENDPOINT or not KEY:
-        print("❌ Error: Missing keys in .env file.")
-        return
+def test_dfw_financials():
+    print(f"\n📡 [1/2] Fetching DFW Financials (RentCast)...")
+    url = "https://api.rentcast.io/v1/avm/value"
+    params = {"address": TEST_ADDRESS, "propertyType": "Single Family"}
+    headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
 
     try:
-        # 2. Initialize the Cosmos Client
-        client = CosmosClient(ENDPOINT, KEY)
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
         
-        # 3. Create (or get) the Database
-        database = client.create_database_if_not_exists(id=DATABASE_NAME)
-        print(f"✅ Database '{DATABASE_NAME}' verified.")
+        if response.status_code == 200:
+            price = data.get("price", 0)
+            rent_min = data.get("rentRange", {}).get("low", 0)
+            rent_max = data.get("rentRange", {}).get("high", 0)
+            print(f"   ✅ SUCCESS: Financial Data Retrieved")
+            print(f"   💰 Est. Value: ${price:,.0f}")
+            print(f"   📉 Est. Rent: ${rent_min} - ${rent_max}/mo")
+            return True
+        else:
+            print(f"   ❌ FAILED: {data}")
+            return False
+    except Exception as e:
+        print(f"   ❌ ERROR: {str(e)}")
+        return False
 
-        # 4. Create (or get) the Container
-        # FIX: Removed 'offer_throughput' because Serverless handles this automatically
-        container = database.create_container_if_not_exists(
-            id=CONTAINER_NAME, 
-            partition_key=PartitionKey(path="/id")
-        )
-        print(f"✅ Container '{CONTAINER_NAME}' verified.")
-        # 5. Insert a Test Document
-        test_item = {
-            "id": "connection-test-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S"),
-            "status": "online",
-            "message": "Hello from Adam's Laptop!",
-            "timestamp": str(datetime.datetime.now())
+def test_dfw_listing_details():
+    print(f"\n🕷️ [2/2] Scraping Zillow Description (Apify)...")
+    print("   ⏳ Connecting to Azure & Apify Cloud (takes ~15s)...")
+    
+    try:
+        client = ApifyClient(APIFY_TOKEN)
+        
+        # Specific input for 'maxcopell/zillow-detail-scraper'
+        run_input = {
+            "startUrls": [{"url": TEST_ZILLOW_URL}],
+            "maxItems": 1
         }
 
-        container.create_item(body=test_item)
-        print("✅ SUCCESS: Test document inserted into Cosmos DB.")
-        print("------------------------------------------------")
-        print("🎉 Infrastructure Phase 1 Complete. You are ready for the Risk Engine.")
+        # Run the actor
+        run = client.actor("maxcopell/zillow-detail-scraper").call(run_input=run_input)
 
-    except exceptions.CosmosHttpResponseError as e:
-        print(f"❌ Azure Error: {e.message}")
+        # Fetch results
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        if dataset_items:
+            item = dataset_items[0]
+            desc = item.get("description", "No description found")
+            price = item.get("price", "N/A")
+            
+            print(f"   ✅ SUCCESS: Listing Scraped")
+            print(f"   🏠 Listed Price: ${price}")
+            print(f"   📝 Agent Notes: {desc[:100]}...") 
+            return True
+        else:
+            print("   ⚠️  Scraper finished but returned no data.")
+            return False
+
     except Exception as e:
-        print(f"❌ General Error: {e}")
+        print(f"   ❌ ERROR: {str(e)}")
+        return False
 
 if __name__ == "__main__":
-    run_verification()
+    print("--- 🤠 STARTING DFW MARKET DATA TEST ---")
+    fin_status = test_dfw_financials()
+    scrape_status = test_dfw_listing_details()
+    
+    if fin_status and scrape_status:
+        print("\n🎉 PHASE 2 COMPLETE: Your DFW Data Pipeline is LIVE.")
+    else:
+        print("\n⚠️  ISSUES DETECTED. Check error messages above.")
