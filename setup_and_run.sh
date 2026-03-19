@@ -9,20 +9,13 @@ RENTCAST_KEY = os.getenv("RENTCAST_API_KEY")
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
 
 # ---------------------------------------------------------
-# DFW MARKET CONFIGURATION (Wylie, TX)
+# CONFIGURATION
 # ---------------------------------------------------------
-# We are testing with a real active/sold listing in Wylie to prove DFW compatibility.
 TEST_ADDRESS = "1200 Woodbridge Pkwy, Wylie, TX 75098"
 TEST_ZILLOW_URL = "https://www.zillow.com/homedetails/1200-Woodbridge-Pkwy-Wylie-TX-75098/26936553_zpid/"
 
-def test_dfw_financials():
-    print(f"\n📡 [1/2] Fetching DFW Financials (RentCast)...")
-    
-    # Debug Check
-    if not RENTCAST_KEY:
-        print("   ❌ ERROR: RentCast Key is missing from .env file.")
-        return False
-
+def test_rentcast():
+    print(f"\n📡 [1/2] Connecting to RentCast (Financials)...")
     url = "https://api.rentcast.io/v1/avm/value"
     params = {"address": TEST_ADDRESS, "propertyType": "Single Family"}
     headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
@@ -33,11 +26,8 @@ def test_dfw_financials():
         
         if response.status_code == 200:
             price = data.get("price", 0)
-            rent_min = data.get("rentRange", {}).get("low", 0)
-            rent_max = data.get("rentRange", {}).get("high", 0)
-            print(f"   ✅ SUCCESS: Financial Data Retrieved")
-            print(f"   💰 Est. Value: ${price:,.0f}")
-            print(f"   📉 Est. Rent: ${rent_min} - ${rent_max}/mo")
+            print(f"   ✅ SUCCESS: RentCast Data Received")
+            print(f"   💰 Est. Price: ${price:,}")
             return True
         else:
             print(f"   ❌ FAILED: {data}")
@@ -46,14 +36,14 @@ def test_dfw_financials():
         print(f"   ❌ ERROR: {str(e)}")
         return False
 
-def test_dfw_listing_details():
-    print(f"\n🕷️ [2/2] Scraping Zillow Description (Apify)...")
-    print("   ⏳ Connecting to Azure & Apify Cloud (takes ~15s)...")
+def test_apify():
+    print(f"\n🕷️ [2/2] Connecting to Apify (Zillow Detail Scraper by maxcopell)...")
+    print("   ⏳ This may take 15-30 seconds...")
     
     try:
         client = ApifyClient(APIFY_TOKEN)
         
-        # Specific input for 'maxcopell/zillow-detail-scraper'
+        # Input for maxcopell/zillow-detail-scraper
         run_input = {
             "startUrls": [{"url": TEST_ZILLOW_URL}],
             "maxItems": 1
@@ -67,12 +57,13 @@ def test_dfw_listing_details():
         
         if dataset_items:
             item = dataset_items[0]
+            # Try to grab the description (fields vary slightly by scraper)
             desc = item.get("description", "No description found")
             price = item.get("price", "N/A")
             
-            print(f"   ✅ SUCCESS: Listing Scraped")
-            print(f"   🏠 Listed Price: ${price}")
-            print(f"   📝 Agent Notes: {desc[:100]}...") 
+            print(f"   ✅ SUCCESS: Apify Scrape Complete")
+            print(f"   🏠 Zillow Price: ${price}")
+            print(f"   📝 Description Snippet: {desc[:100]}...") 
             return True
         else:
             print("   ⚠️  Scraper finished but returned no data.")
@@ -83,11 +74,11 @@ def test_dfw_listing_details():
         return False
 
 if __name__ == "__main__":
-    print("--- 🤠 STARTING DFW MARKET DATA TEST ---")
-    fin_status = test_dfw_financials()
-    scrape_status = test_dfw_listing_details()
+    print("--- 🚀 STARTING CORPORATE DATA TEST ---")
+    rc_status = test_rentcast()
+    ap_status = test_apify()
     
-    if fin_status and scrape_status:
-        print("\n🎉 PHASE 2 COMPLETE: Your DFW Data Pipeline is LIVE.")
+    if rc_status and ap_status:
+        print("\n🎉 PHASE 2 COMPLETE: Data Pipelines are ACTIVE.")
     else:
         print("\n⚠️  ISSUES DETECTED. Check error messages above.")
