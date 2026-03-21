@@ -1,50 +1,84 @@
 import azure.functions as func
-import logging
-import json
-import os
-import requests
-import re
 import datetime
-import statistics
+import json
+import logging
+import os
+import re
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import requests
 from apify_client import ApifyClient
+from azure.cosmos import CosmosClient, exceptions as cosmos_exceptions
 from openai import OpenAI
-from azure.cosmos import CosmosClient, PartitionKey
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # ---------------------------------------------------------
-# CONFIGURATION & CLIENTS
+# CONFIGURATION
 # ---------------------------------------------------------
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 RENTCAST_KEY = os.getenv("RENTCAST_API_KEY")
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
 COSMOS_ENDPOINT = os.getenv("COSMOS_ENDPOINT")
 COSMOS_KEY = os.getenv("COSMOS_KEY")
+EXPECTED_API_KEY = os.getenv("PROPSCOUT_API_KEY")
 
-openai_client = None
-container = None
+COSMOS_DB_NAME = os.getenv("COSMOS_DB_NAME", "propscout-db")
+COSMOS_CONTAINER_NAME = os.getenv("COSMOS_CONTAINER_NAME", "reports")
+COSMOS_AUTO_CREATE = os.getenv("COSMOS_AUTO_CREATE", "false").lower() == "true"
 
-try:
-    if OPENAI_KEY:
-        openai_client = OpenAI(api_key=OPENAI_KEY)
+REQUEST_TIMEOUT_SECONDS = 20
+MAX_HTTP_RETRIES = 2
+HTTP_BACKOFF_FACTOR = 0.4
 
-    db_client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
-    database = db_client.create_database_if_not_exists(id="propscout-db")
-    container = database.create_container_if_not_exists(id="reports", partition_key=PartitionKey(path="/id"))
-    print("✅ Successfully connected to Cosmos DB!")
-except Exception as e:
-    print(f"❌ CRITICAL ERROR ON STARTUP: {e}")
-    container = None
+# RentCast comps fetch tunables
+COMP_RADIUS_MILES = 2
+COMP_LIMIT = 12
+
+# Financial assumptions
+VACANCY_RATE = 0.05
+PROPERTY_TAX_RATE = 0.022
+INSURANCE_RATE = 0.005
+MAINTENANCE_RATE = 0.010
+MANAGEMENT_FEE_RATE = 0.08
+CAPEX_RESERVE_RATE = 0.05
+LTV = 0.80
+MORTGAGE_RATE_ANNUAL = 0.07
+AMORTIZATION_MONTHS = 360
+TARGET_CAP_RATE = 0.0625
+
+# Valuation tunables
+OUTLIER_LOW_MULTIPLIER = 0.55
+OUTLIER_HIGH_MULTIPLIER = 1.80
+OUTLIER_WEIGHT_MULTIPLIER = 0.2
+
+# Operational switches
+FAST_MODE_SKIP_GPT = True
+FAST_MODE_SKIP_PERSISTENCE = True
+
+# ---------------------------------------------------------
+# GLOBAL CLIENTS (LAZY INITIALIZED)
+# ---------------------------------------------------------
+_http_session: Optional[requests.Session] = None
+_openai_client: Optional[OpenAI] = None
+_apify_client: Optional[ApifyClient] = None
+_cosmos_container = None
+_cosmos_init_attempted = False
 
 
 # ---------------------------------------------------------
 # CORE HELPERS
 # ---------------------------------------------------------
-def clamp(value, low, high):
+def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def safe_float(value, default=0.0):
+def safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
     try:
         if value is None:
             return default
@@ -53,7 +87,7 @@ def safe_float(value, default=0.0):
         return default
 
 
-def safe_int(value, default=0):
+def safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
             return default
@@ -62,7 +96,14 @@ def safe_int(value, default=0):
         return default
 
 
-def unique_nonempty(items):
+def to_positive_float(value: Any) -> Optional[float]:
+    parsed = safe_float(value, default=None)
+    if parsed is None or parsed <= 0:
+        return None
+    return float(parsed)
+
+
+def unique_nonempty(items: List[Any]) -> List[str]:
     seen = set()
     out = []
     for item in items:
@@ -79,8 +120,319 @@ def unique_nonempty(items):
     return out
 
 
-def parse_rent_amount(value):
-    """Parse a plausible monthly rent from mixed numeric/string values."""
+def build_report_id(address: str) -> str:
+    address_slug = re.sub(r"[^a-z0-9]+", "-", (address or "unknown").lower()).strip("-")
+    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return f"{address_slug[:60]}-{ts}-{uuid.uuid4().hex[:8]}"
+
+
+def make_source_status(mode: str) -> Dict[str, Any]:
+    return {
+        "mode": mode,
+        "rentcast_valuation": {"status": "unknown", "detail": None},
+        "rentcast_comps": {"status": "unknown", "detail": None},
+        "zillow_scrape": {"status": "unknown", "detail": None},
+        "gpt_enhancement": {"status": "unknown", "detail": None},
+        "persistence": {"status": "unknown", "detail": None},
+        "rent_source": "none",
+    }
+
+
+def parse_bool_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+# ---------------------------------------------------------
+# CLIENT INITIALIZATION
+# ---------------------------------------------------------
+def get_http_session() -> requests.Session:
+    global _http_session
+    if _http_session is not None:
+        return _http_session
+
+    session = requests.Session()
+    retry = Retry(
+        total=MAX_HTTP_RETRIES,
+        connect=MAX_HTTP_RETRIES,
+        read=MAX_HTTP_RETRIES,
+        status=MAX_HTTP_RETRIES,
+        backoff_factor=HTTP_BACKOFF_FACTOR,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "POST"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    _http_session = session
+    return _http_session
+
+
+def get_openai_client() -> Optional[OpenAI]:
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
+    if not OPENAI_KEY:
+        return None
+    try:
+        _openai_client = OpenAI(api_key=OPENAI_KEY)
+        return _openai_client
+    except Exception as exc:
+        logging.error("openai_client_init_failed error=%s", exc)
+        return None
+
+
+def get_apify_client() -> Optional[ApifyClient]:
+    global _apify_client
+    if _apify_client is not None:
+        return _apify_client
+    if not APIFY_TOKEN:
+        return None
+    try:
+        _apify_client = ApifyClient(APIFY_TOKEN)
+        return _apify_client
+    except Exception as exc:
+        logging.error("apify_client_init_failed error=%s", exc)
+        return None
+
+
+def get_cosmos_container():
+    global _cosmos_container, _cosmos_init_attempted
+    if _cosmos_container is not None:
+        return _cosmos_container
+    if _cosmos_init_attempted:
+        return None
+
+    _cosmos_init_attempted = True
+    if not COSMOS_ENDPOINT or not COSMOS_KEY:
+        logging.warning("cosmos_not_configured")
+        return None
+
+    try:
+        client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
+        if COSMOS_AUTO_CREATE:
+            db = client.create_database_if_not_exists(id=COSMOS_DB_NAME)
+            _cosmos_container = db.create_container_if_not_exists(
+                id=COSMOS_CONTAINER_NAME,
+                partition_key={"paths": ["/id"], "kind": "Hash"},
+            )
+        else:
+            db = client.get_database_client(COSMOS_DB_NAME)
+            _cosmos_container = db.get_container_client(COSMOS_CONTAINER_NAME)
+        logging.info("cosmos_container_ready db=%s container=%s", COSMOS_DB_NAME, COSMOS_CONTAINER_NAME)
+        return _cosmos_container
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        logging.error("cosmos_resource_not_found db=%s container=%s", COSMOS_DB_NAME, COSMOS_CONTAINER_NAME)
+        return None
+    except Exception as exc:
+        logging.error("cosmos_init_failed error=%s", exc)
+        return None
+
+
+# ---------------------------------------------------------
+# VALIDATION & AUTH
+# ---------------------------------------------------------
+def enforce_api_key_if_configured(req: func.HttpRequest) -> Optional[func.HttpResponse]:
+    if not EXPECTED_API_KEY:
+        return None
+
+    provided = req.headers.get("X-API-Key")
+    if provided != EXPECTED_API_KEY:
+        logging.warning("request_rejected invalid_api_key")
+        return func.HttpResponse(
+            json.dumps({"error": "Unauthorized"}),
+            status_code=401,
+            mimetype="application/json",
+        )
+    return None
+
+
+def validate_and_normalize_zillow_url(raw_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    if not raw_url:
+        return None, "Missing 'url'."
+
+    url = str(raw_url).strip()
+    parsed = urlparse(url)
+
+    if parsed.scheme.lower() != "https":
+        return None, "URL must use https."
+
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    if host != "zillow.com" and not host.endswith(".zillow.com"):
+        return None, "Unsupported domain. Only Zillow URLs are allowed."
+
+    path = parsed.path or ""
+    if not path.startswith("/homedetails/"):
+        return None, "Unsupported Zillow path. URL must be a homedetails page."
+
+    if len(path.split("/")) < 3:
+        return None, "Malformed Zillow homedetails URL."
+
+    normalized = f"https://{parsed.netloc}{parsed.path}"
+    if parsed.query:
+        normalized += f"?{parsed.query}"
+    return normalized, None
+
+
+def extract_address_from_url(url: str) -> Optional[str]:
+    logging.info("address_parse_attempt url=%s", url)
+    parsed = urlparse(url)
+    match = re.search(r"/homedetails/([^/]+)/", parsed.path)
+    if not match:
+        return None
+
+    raw_string = match.group(1)
+    clean_address = raw_string.replace("-", " ").strip()
+    logging.info("address_parse_success address=%s", clean_address)
+    return clean_address or None
+
+
+# ---------------------------------------------------------
+# EXTERNAL DATA PIPELINE
+# ---------------------------------------------------------
+def get_rentcast_data(address: str) -> Tuple[Dict[str, Any], str, Optional[str]]:
+    if not RENTCAST_KEY:
+        return {}, "skipped", "RENTCAST_API_KEY not configured"
+
+    url = "https://api.rentcast.io/v1/avm/value"
+    params = {"address": address, "propertyType": "Single Family"}
+    headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
+
+    try:
+        response = get_http_session().get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+        if response.status_code == 200:
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}, "ok", None
+        return {}, "failed", f"http_{response.status_code}"
+    except requests.RequestException as exc:
+        return {}, "failed", f"network_error: {exc}"
+    except Exception as exc:
+        return {}, "failed", f"unexpected_error: {exc}"
+
+
+def get_neighborhood_comps(address: str) -> Tuple[Dict[str, Any], str, Optional[str]]:
+    default_comps = {
+        "average_comp_price": None,
+        "median_comp_price": None,
+        "comp_count": 0,
+        "average_comp_price_per_sqft": None,
+        "comps": [],
+    }
+
+    if not RENTCAST_KEY:
+        return default_comps, "skipped", "RENTCAST_API_KEY not configured"
+
+    url = "https://api.rentcast.io/v1/sales/comps"
+    params = {
+        "address": address,
+        "propertyType": "Single Family",
+        "radius": COMP_RADIUS_MILES,
+        "limit": COMP_LIMIT,
+    }
+    headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
+
+    try:
+        response = get_http_session().get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+        if response.status_code != 200:
+            return default_comps, "failed", f"http_{response.status_code}"
+
+        comps = response.json()
+        if not isinstance(comps, list):
+            return default_comps, "failed", "invalid_payload_shape"
+
+        clean_comps = []
+        prices = []
+        ppsf_values = []
+
+        for comp in comps:
+            if not isinstance(comp, dict):
+                continue
+
+            price = to_positive_float(comp.get("price"))
+            sqft = to_positive_float(comp.get("squareFootage") or comp.get("livingArea"))
+            distance = to_positive_float(comp.get("distance"))
+            if price is None:
+                continue
+
+            prices.append(price)
+            ppsf = None
+            if sqft is not None and sqft > 0:
+                ppsf = price / sqft
+                ppsf_values.append(ppsf)
+
+            clean_comps.append(
+                {
+                    "price": round(price, 2),
+                    "square_footage": round(sqft, 2) if sqft is not None else None,
+                    "distance_miles": round(distance, 2) if distance is not None else None,
+                    "price_per_sqft": round(ppsf, 2) if ppsf is not None else None,
+                    "sold_date": comp.get("soldDate"),
+                }
+            )
+
+        if not prices:
+            return default_comps, "failed", "no_usable_comp_prices"
+
+        avg_comp = sum(prices) / len(prices)
+        sorted_prices = sorted(prices)
+        mid = len(sorted_prices) // 2
+        if len(sorted_prices) % 2 == 0:
+            median_comp = (sorted_prices[mid - 1] + sorted_prices[mid]) / 2
+        else:
+            median_comp = sorted_prices[mid]
+
+        avg_ppsf = (sum(ppsf_values) / len(ppsf_values)) if ppsf_values else None
+
+        return (
+            {
+                "average_comp_price": round(avg_comp, 2),
+                "median_comp_price": round(median_comp, 2),
+                "comp_count": len(prices),
+                "average_comp_price_per_sqft": round(avg_ppsf, 2) if avg_ppsf is not None else None,
+                "comps": clean_comps[:8],
+            },
+            "ok",
+            None,
+        )
+    except requests.RequestException as exc:
+        return default_comps, "failed", f"network_error: {exc}"
+    except Exception as exc:
+        return default_comps, "failed", f"unexpected_error: {exc}"
+
+
+def scrape_zillow(zillow_url: str) -> Tuple[Dict[str, Any], str, Optional[str]]:
+    client = get_apify_client()
+    if client is None:
+        return {}, "skipped", "APIFY_API_TOKEN not configured"
+
+    run_input = {"startUrls": [{"url": zillow_url}], "maxItems": 1}
+
+    for attempt in range(1, 3):
+        try:
+            run = client.actor("maxcopell/zillow-detail-scraper").call(run_input=run_input)
+            dataset = client.dataset(run["defaultDatasetId"]).list_items().items
+            if dataset and isinstance(dataset, list) and isinstance(dataset[0], dict):
+                return dataset[0], "ok", None
+            return {}, "failed", "empty_dataset"
+        except Exception as exc:
+            if attempt == 2:
+                return {}, "failed", f"apify_error: {exc}"
+            time.sleep(0.6 * attempt)
+
+    return {}, "failed", "unknown_apify_failure"
+
+
+# ---------------------------------------------------------
+# RENT EXTRACTION HELPERS
+# ---------------------------------------------------------
+def parse_rent_amount(value: Any) -> Optional[float]:
     if value is None:
         return None
 
@@ -90,36 +442,37 @@ def parse_rent_amount(value):
         cleaned = re.sub(r"[^\d.]", "", value)
         if not cleaned:
             return None
-        amount = safe_float(cleaned, default=0.0)
+        amount = safe_float(cleaned, default=0.0) or 0.0
     else:
         return None
 
-    # Guardrail: reject implausible monthly rents.
+    # Guardrail against implausible monthly rent values.
     if amount <= 0 or amount < 300 or amount > 50000:
         return None
     return amount
 
 
-def extract_rent_from_listing_history(listing_data):
+def extract_rent_from_listing_history(listing_data: Dict[str, Any]) -> Optional[float]:
     """
-    Best-effort rent fallback from Zillow history-like arrays.
-    Handles inconsistent scraper schemas and returns the most recent rent-like event.
+    Best-effort extraction from history-like arrays in inconsistent Zillow payloads.
+    This is intentionally conservative and transparent rather than schema-fragile.
     """
     if not isinstance(listing_data, dict):
         return None
 
-    history_candidates = []
+    history_lists = []
     for key, value in listing_data.items():
         key_l = str(key).lower()
-        if isinstance(value, list) and ("history" in key_l or "price" in key_l or "event" in key_l):
-            history_candidates.append(value)
+        if isinstance(value, list) and any(token in key_l for token in ("history", "event", "price")):
+            history_lists.append(value)
 
-    rent_events = []
     rent_keywords = ("rent", "rental", "leased", "lease")
-    rent_value_keys = ("rent", "rentalprice", "monthlyrent", "price", "listprice", "amount")
-    date_keys = ("date", "eventdate", "posteddate", "time", "datetime")
+    rent_value_keys = ("rent", "rentalPrice", "monthlyRent", "price", "listPrice", "amount")
+    date_keys = ("date", "eventDate", "postedDate", "time", "datetime")
 
-    for history in history_candidates:
+    candidates: List[Tuple[int, int, float]] = []
+
+    for history in history_lists:
         if not isinstance(history, list):
             continue
 
@@ -129,212 +482,81 @@ def extract_rent_from_listing_history(listing_data):
 
             text_blob = " ".join(
                 str(item.get(k, "")).lower()
-                for k in ("event", "eventType", "type", "description", "source", "status")
+                for k in ("event", "eventType", "type", "description", "status", "source")
             )
             has_rent_signal = any(keyword in text_blob for keyword in rent_keywords)
+            if not has_rent_signal:
+                continue
 
             amount = None
-            for key in rent_value_keys:
-                for candidate_key in (key, key.title(), key.upper()):
-                    if candidate_key in item:
-                        amount = parse_rent_amount(item.get(candidate_key))
-                        if amount:
-                            break
-                if amount:
+            for k in rent_value_keys:
+                amount = parse_rent_amount(item.get(k))
+                if amount is not None:
+                    break
+                # Some scrapers emit title case/upper variants.
+                amount = parse_rent_amount(item.get(k.title()) or item.get(k.upper()))
+                if amount is not None:
                     break
 
-            if not has_rent_signal or not amount:
+            if amount is None:
                 continue
 
-            # Use max parsed date digits as a lightweight recency score.
             recency = 0
             for dkey in date_keys:
-                if dkey in item and item.get(dkey) is not None:
-                    digits = re.sub(r"\D", "", str(item.get(dkey)))
-                    if len(digits) >= 8:
-                        recency = max(recency, safe_int(digits[:14], 0))
+                raw = item.get(dkey)
+                if raw is None:
+                    continue
+                digits = re.sub(r"\D", "", str(raw))
+                if len(digits) >= 8:
+                    recency = max(recency, safe_int(digits[:14], 0))
 
-            rent_events.append((recency, idx, amount))
+            candidates.append((recency, idx, amount))
 
-    if not rent_events:
+    if not candidates:
         return None
 
-    rent_events.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return round(rent_events[0][2], 2)
-
-
-# ---------------------------------------------------------
-# HELPER: AUTO-PARSE URL
-# ---------------------------------------------------------
-def extract_address_from_url(url):
-    logging.info("🕵️‍♂️ Attempting to auto-parse address directly from URL...")
-    # Matches the pattern in zillow.com/homedetails/123-Main-St-City-TX-75000/
-    match = re.search(r'homedetails/([^/]+)/', url)
-    if match:
-        raw_string = match.group(1)
-        clean_address = raw_string.replace('-', ' ')
-        logging.info(f"✅ Auto-parsed address: {clean_address}")
-        return clean_address
-    return None
-
-
-# ---------------------------------------------------------
-# DATA PIPELINE
-# ---------------------------------------------------------
-def get_rentcast_data(address):
-    logging.info(f"📡 Fetching RentCast Valuation for: {address}")
-    url = "https://api.rentcast.io/v1/avm/value"
-    params = {"address": address, "propertyType": "Single Family"}
-    headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
-
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        logging.error(f"RentCast Failed: {e}")
-    return {}
-
-
-def get_neighborhood_comps(address):
-    logging.info(f"🏘️ Fetching Neighborhood Comps for: {address}")
-    url = "https://api.rentcast.io/v1/sales/comps"
-    params = {"address": address, "propertyType": "Single Family", "radius": 2, "limit": 12}
-    headers = {"accept": "application/json", "X-Api-Key": RENTCAST_KEY}
-
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=20)
-        if response.status_code != 200:
-            return {
-                "average_comp_price": 0,
-                "median_comp_price": 0,
-                "comp_count": 0,
-                "average_comp_price_per_sqft": 0,
-                "comps": []
-            }
-
-        comps = response.json()
-        if not isinstance(comps, list) or len(comps) == 0:
-            return {
-                "average_comp_price": 0,
-                "median_comp_price": 0,
-                "comp_count": 0,
-                "average_comp_price_per_sqft": 0,
-                "comps": []
-            }
-
-        clean_comps = []
-        prices = []
-        price_per_sqft_values = []
-
-        for comp in comps:
-            price = safe_float(comp.get('price'))
-            sqft = safe_float(comp.get('squareFootage') or comp.get('livingArea'))
-            distance = safe_float(comp.get('distance'))
-            if price <= 0:
-                continue
-
-            prices.append(price)
-
-            ppsf = 0
-            if sqft > 0:
-                ppsf = price / sqft
-                price_per_sqft_values.append(ppsf)
-
-            clean_comps.append({
-                "price": round(price, 2),
-                "square_footage": round(sqft, 2) if sqft > 0 else 0,
-                "distance_miles": round(distance, 2) if distance > 0 else 0,
-                "price_per_sqft": round(ppsf, 2) if ppsf > 0 else 0,
-                "sold_date": comp.get('soldDate')
-            })
-
-        if not prices:
-            return {
-                "average_comp_price": 0,
-                "median_comp_price": 0,
-                "comp_count": 0,
-                "average_comp_price_per_sqft": 0,
-                "comps": []
-            }
-
-        avg_comp_price = statistics.mean(prices)
-        median_comp_price = statistics.median(prices)
-        avg_ppsf = statistics.mean(price_per_sqft_values) if price_per_sqft_values else 0
-
-        return {
-            "average_comp_price": round(avg_comp_price, 2),
-            "median_comp_price": round(median_comp_price, 2),
-            "comp_count": len(prices),
-            "average_comp_price_per_sqft": round(avg_ppsf, 2),
-            "comps": clean_comps[:8]
-        }
-
-    except Exception as e:
-        logging.error(f"RentCast Comps Failed: {e}")
-
-    return {
-        "average_comp_price": 0,
-        "median_comp_price": 0,
-        "comp_count": 0,
-        "average_comp_price_per_sqft": 0,
-        "comps": []
-    }
-
-
-def scrape_zillow(zillow_url):
-    logging.info("🕷️ Scraping Zillow for property specs and description...")
-    try:
-        client = ApifyClient(APIFY_TOKEN)
-        run_input = {"startUrls": [{"url": zillow_url}], "maxItems": 1}
-        run = client.actor("maxcopell/zillow-detail-scraper").call(run_input=run_input)
-        dataset = client.dataset(run["defaultDatasetId"]).list_items().items
-        if dataset:
-            return dataset[0]
-    except Exception as e:
-        logging.error(f"Apify Failed: {e}")
-    return {}
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return round(candidates[0][2], 2)
 
 
 # ---------------------------------------------------------
 # VALUATION ENGINE
 # ---------------------------------------------------------
-def build_valuation_model(listing_data, financial_data, comps_data, property_specs, monthly_rent):
-    listing_price = safe_float(listing_data.get('price'))
-    zestimate = safe_float(listing_data.get('zestimate'))
-    rentcast_price = safe_float(financial_data.get('price'))
-    comp_avg = safe_float(comps_data.get('average_comp_price'))
-    comp_median = safe_float(comps_data.get('median_comp_price'))
-    comp_ppsf = safe_float(comps_data.get('average_comp_price_per_sqft'))
-    sqft = safe_float(property_specs.get('sqft'))
-    year_built = safe_int(property_specs.get('yearBuilt'))
+def build_valuation_model(
+    listing_data: Dict[str, Any],
+    financial_data: Dict[str, Any],
+    comps_data: Dict[str, Any],
+    property_specs: Dict[str, Any],
+    monthly_rent: Optional[float],
+) -> Dict[str, Any]:
+    listing_price = to_positive_float(listing_data.get("price"))
+    zestimate = to_positive_float(listing_data.get("zestimate"))
+    rentcast_price = to_positive_float(financial_data.get("price"))
+    comp_avg = to_positive_float(comps_data.get("average_comp_price"))
+    comp_median = to_positive_float(comps_data.get("median_comp_price"))
+    comp_ppsf = to_positive_float(comps_data.get("average_comp_price_per_sqft"))
+    sqft = to_positive_float(property_specs.get("sqft"))
+    year_built = safe_int(property_specs.get("yearBuilt"), 0)
 
+    has_rent = monthly_rent is not None and monthly_rent > 0
     signals = []
 
-    if listing_price > 0:
+    if listing_price is not None:
         signals.append({"name": "zillow_list_price", "value": listing_price, "weight": 0.22})
-
-    if zestimate > 0:
+    if zestimate is not None:
         signals.append({"name": "zillow_zestimate", "value": zestimate, "weight": 0.12})
-
-    if rentcast_price > 0:
+    if rentcast_price is not None:
         signals.append({"name": "rentcast_avm", "value": rentcast_price, "weight": 0.34})
-
-    if comp_median > 0:
+    if comp_median is not None:
         signals.append({"name": "comps_median", "value": comp_median, "weight": 0.22})
-
-    if comp_avg > 0:
+    if comp_avg is not None:
         signals.append({"name": "comps_average", "value": comp_avg, "weight": 0.14})
 
-    if comp_ppsf > 0 and sqft > 0:
-        comp_ppsf_value = comp_ppsf * sqft
-        signals.append({"name": "comps_price_per_sqft", "value": comp_ppsf_value, "weight": 0.18})
-
-    monthly_rent_value = safe_float(monthly_rent, default=0.0)
-    has_rent = monthly_rent_value > 0
+    if comp_ppsf is not None and sqft is not None:
+        signals.append({"name": "comps_price_per_sqft", "value": comp_ppsf * sqft, "weight": 0.18})
 
     if has_rent:
-        annual_gross = monthly_rent_value * 12
+        annual_gross = monthly_rent * 12
         expense_ratio = 0.38
         if year_built and year_built < 1990:
             expense_ratio += 0.03
@@ -342,62 +564,56 @@ def build_valuation_model(listing_data, financial_data, comps_data, property_spe
             expense_ratio -= 0.02
 
         implied_noi = annual_gross * (1 - clamp(expense_ratio, 0.30, 0.50))
-        target_cap_rate = 0.0625
-        rent_based_value = implied_noi / target_cap_rate if target_cap_rate > 0 else 0
-        if rent_based_value > 0:
+        rent_based_value = implied_noi / TARGET_CAP_RATE if TARGET_CAP_RATE > 0 else None
+        if rent_based_value and rent_based_value > 0:
             signals.append({"name": "income_approach", "value": rent_based_value, "weight": 0.20})
 
-    clean_values = [s["value"] for s in signals if s["value"] > 0]
-    if not clean_values:
+    values = [s["value"] for s in signals if s.get("value") is not None and s["value"] > 0]
+    if not values:
         return {
-            "estimated_value": 0,
-            "valuation_low": 0,
-            "valuation_high": 0,
+            "estimated_value": None,
+            "valuation_low": None,
+            "valuation_high": None,
             "confidence_score": 25,
-            "price_vs_value_delta": 0,
-            "price_vs_value_delta_pct": 0,
+            "price_vs_value_delta": None,
+            "price_vs_value_delta_pct": None,
             "valuation_status": "unknown",
-            "suggested_offer": 0,
-            "signals": []
+            "suggested_offer": None,
+            "signals": [],
         }
 
-    center = statistics.median(clean_values)
+    sorted_values = sorted(values)
+    mid = len(sorted_values) // 2
+    center = (sorted_values[mid - 1] + sorted_values[mid]) / 2 if len(sorted_values) % 2 == 0 else sorted_values[mid]
 
     for signal in signals:
         val = signal["value"]
-        if center > 0 and (val < center * 0.55 or val > center * 1.80):
+        if val < center * OUTLIER_LOW_MULTIPLIER or val > center * OUTLIER_HIGH_MULTIPLIER:
             signal["outlier"] = True
-            signal["adjusted_weight"] = signal["weight"] * 0.2
+            signal["adjusted_weight"] = signal["weight"] * OUTLIER_WEIGHT_MULTIPLIER
         else:
             signal["outlier"] = False
             signal["adjusted_weight"] = signal["weight"]
 
-    weight_sum = sum(s["adjusted_weight"] for s in signals if s["value"] > 0)
-    if weight_sum == 0:
-        estimate = center
-    else:
-        estimate = sum(s["value"] * s["adjusted_weight"] for s in signals if s["value"] > 0) / weight_sum
+    weight_sum = sum(s["adjusted_weight"] for s in signals)
+    estimate = center if weight_sum <= 0 else sum(s["value"] * s["adjusted_weight"] for s in signals) / weight_sum
 
     variance = 0.0
     if weight_sum > 0:
-        variance = sum(
-            s["adjusted_weight"] * ((s["value"] - estimate) ** 2)
-            for s in signals if s["value"] > 0
-        ) / weight_sum
+        variance = sum(s["adjusted_weight"] * ((s["value"] - estimate) ** 2) for s in signals) / weight_sum
 
     std_dev = variance ** 0.5
     dispersion_ratio = (std_dev / estimate) if estimate > 0 else 1.0
 
-    comp_count = safe_int(comps_data.get("comp_count"))
+    comp_count = safe_int(comps_data.get("comp_count"), 0)
     confidence = 84
     confidence -= min(30, int(dispersion_ratio * 100))
     confidence -= 6 if len(signals) < 4 else 0
     confidence -= 8 if comp_count < 3 else 0
-    # Missing rent should reduce confidence, but not imply zero-income distress.
     confidence -= 6 if not has_rent else 0
-    confidence -= 5 if rentcast_price <= 0 else 0
+    confidence -= 5 if rentcast_price is None else 0
     confidence += 4 if len(signals) >= 6 else 0
-    confidence = clamp(confidence, 25, 95)
+    confidence = int(clamp(confidence, 25, 95))
 
     range_pct = 0.07 + min(0.18, dispersion_ratio * 0.9)
     if confidence < 55:
@@ -406,72 +622,68 @@ def build_valuation_model(listing_data, financial_data, comps_data, property_spe
     valuation_low = estimate * (1 - range_pct)
     valuation_high = estimate * (1 + range_pct)
 
-    ask_price = listing_price or rentcast_price or 0
-    delta = (ask_price - estimate) if ask_price > 0 else 0
-    delta_pct = (delta / estimate) if estimate > 0 and ask_price > 0 else 0
+    ask_price = listing_price or rentcast_price
+    delta = (ask_price - estimate) if ask_price is not None else None
+    delta_pct = ((delta / estimate) * 100) if ask_price is not None and estimate > 0 else None
 
-    if ask_price <= 0:
+    if ask_price is None:
         valuation_status = "unknown"
-    elif delta_pct >= 0.12:
+    elif delta_pct is not None and delta_pct >= 12:
         valuation_status = "overpriced"
-    elif delta_pct >= 0.05:
+    elif delta_pct is not None and delta_pct >= 5:
         valuation_status = "slightly_overpriced"
-    elif delta_pct <= -0.10:
+    elif delta_pct is not None and delta_pct <= -10:
         valuation_status = "undervalued"
-    elif delta_pct <= -0.04:
+    elif delta_pct is not None and delta_pct <= -4:
         valuation_status = "slightly_undervalued"
     else:
         valuation_status = "fair_value"
 
-    suggested_offer = 0
-    if estimate > 0:
-        suggested_offer = estimate * (0.96 if confidence >= 70 else 0.92)
+    suggested_offer = estimate * (0.96 if confidence >= 70 else 0.92) if estimate > 0 else None
 
     return {
         "estimated_value": round(estimate, 2),
         "valuation_low": round(valuation_low, 2),
         "valuation_high": round(valuation_high, 2),
-        "confidence_score": int(confidence),
-        "price_vs_value_delta": round(delta, 2),
-        "price_vs_value_delta_pct": round(delta_pct * 100, 2),
+        "confidence_score": confidence,
+        "price_vs_value_delta": round(delta, 2) if delta is not None else None,
+        "price_vs_value_delta_pct": round(delta_pct, 2) if delta_pct is not None else None,
         "valuation_status": valuation_status,
-        "suggested_offer": round(suggested_offer, 2),
+        "suggested_offer": round(suggested_offer, 2) if suggested_offer is not None else None,
         "signals": [
             {
                 "name": s["name"],
                 "value": round(s["value"], 2),
                 "base_weight": round(s["weight"], 3),
                 "adjusted_weight": round(s["adjusted_weight"], 3),
-                "outlier": s["outlier"]
+                "outlier": s["outlier"],
             }
             for s in signals
-        ]
+        ],
     }
 
 
 # ---------------------------------------------------------
 # FINANCIAL ENGINE
 # ---------------------------------------------------------
-def calculate_financials(price, monthly_rent):
-    logging.info("🧮 Crunching hard financial metrics...")
+def calculate_financials(price: Optional[float], monthly_rent: Optional[float]) -> Dict[str, Any]:
+    logging.info("financials_compute_start")
 
-    price_value = safe_float(price, default=0.0)
-    monthly_rent_value = safe_float(monthly_rent, default=0.0)
-    has_price = price_value > 0
-    has_rent = monthly_rent_value > 0
+    has_price = price is not None and price > 0
+    has_rent = monthly_rent is not None and monthly_rent > 0
 
-    # Business logic: missing rent is unknown input, not zero performance.
+    # Missing rent/price means incomputable metrics, not zero business performance.
     if not has_price or not has_rent:
         if has_price and not has_rent:
-            data_quality_flag = "missing_rent"
+            quality = "missing_rent"
         elif not has_price and not has_rent:
-            data_quality_flag = "missing_price_and_rent"
+            quality = "missing_price_and_rent"
         else:
-            data_quality_flag = "missing_price"
+            quality = "missing_price"
 
         return {
-            "purchase_price": round(price_value, 2) if has_price else None,
-            "monthly_rent_est": round(monthly_rent_value, 2) if has_rent else None,
+            "purchase_price": round(price, 2) if has_price else None,
+            "monthly_rent_est": round(monthly_rent, 2) if has_rent else None,
             "annual_gross_rent": None,
             "annual_expenses_est": None,
             "noi": None,
@@ -480,53 +692,58 @@ def calculate_financials(price, monthly_rent):
             "annual_debt_service": None,
             "annual_cash_flow_after_debt": None,
             "breakeven_occupancy": None,
-            "data_quality_flag": data_quality_flag
+            "data_quality_flag": quality,
         }
 
-    annual_gross_rent = monthly_rent_value * 12
-    vacancy = annual_gross_rent * 0.05
+    annual_gross_rent = monthly_rent * 12
+    vacancy = annual_gross_rent * VACANCY_RATE
     effective_gross_income = annual_gross_rent - vacancy
 
-    taxes = price_value * 0.022
-    insurance = price_value * 0.005
-    maintenance = price_value * 0.010
-    capex_reserve = annual_gross_rent * 0.05
-    property_mgmt = effective_gross_income * 0.08
+    taxes = price * PROPERTY_TAX_RATE
+    insurance = price * INSURANCE_RATE
+    maintenance = price * MAINTENANCE_RATE
+    capex_reserve = annual_gross_rent * CAPEX_RESERVE_RATE
+    property_mgmt = effective_gross_income * MANAGEMENT_FEE_RATE
 
     annual_expenses = taxes + insurance + maintenance + capex_reserve + property_mgmt
     noi = effective_gross_income - annual_expenses
-    cap_rate = (noi / price_value) * 100 if price_value > 0 else None
+    cap_rate = (noi / price) * 100 if price > 0 else None
 
-    principal = price_value * 0.80
-    monthly_rate = 0.07 / 12
-    n_payments = 360
+    principal = price * LTV
+    monthly_rate = MORTGAGE_RATE_ANNUAL / 12
+    n = AMORTIZATION_MONTHS
 
-    monthly_mortgage = principal * (monthly_rate * (1 + monthly_rate) ** n_payments) / ((1 + monthly_rate) ** n_payments - 1)
+    monthly_mortgage = principal * (monthly_rate * (1 + monthly_rate) ** n) / ((1 + monthly_rate) ** n - 1)
     annual_debt_service = monthly_mortgage * 12
 
-    dscr = noi / annual_debt_service if annual_debt_service > 0 else 0
+    dscr = noi / annual_debt_service if annual_debt_service > 0 else None
     annual_cash_flow_after_debt = noi - annual_debt_service
-    breakeven_occupancy = (annual_expenses + annual_debt_service) / annual_gross_rent if annual_gross_rent > 0 else 0
+    breakeven_occupancy = (annual_expenses + annual_debt_service) / annual_gross_rent if annual_gross_rent > 0 else None
 
     return {
-        "purchase_price": round(price_value, 2),
-        "monthly_rent_est": round(monthly_rent_value, 2),
+        "purchase_price": round(price, 2),
+        "monthly_rent_est": round(monthly_rent, 2),
         "annual_gross_rent": round(annual_gross_rent, 2),
         "annual_expenses_est": round(annual_expenses, 2),
         "noi": round(noi, 2),
-        "cap_rate": round(cap_rate, 2),
-        "dscr": round(dscr, 2),
+        "cap_rate": round(cap_rate, 2) if cap_rate is not None else None,
+        "dscr": round(dscr, 2) if dscr is not None else None,
         "annual_debt_service": round(annual_debt_service, 2),
         "annual_cash_flow_after_debt": round(annual_cash_flow_after_debt, 2),
-        "breakeven_occupancy": round(breakeven_occupancy * 100, 2),
-        "data_quality_flag": "ok"
+        "breakeven_occupancy": round(breakeven_occupancy * 100, 2) if breakeven_occupancy is not None else None,
+        "data_quality_flag": "ok",
     }
 
 
 # ---------------------------------------------------------
-# RULE-BASED UNDERWRITER
+# DETERMINISTIC UNDERWRITER
 # ---------------------------------------------------------
-def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, property_specs):
+def run_algorithmic_underwrite(
+    valuation_model: Dict[str, Any],
+    financial_metrics: Dict[str, Any],
+    comps_data: Dict[str, Any],
+    property_specs: Dict[str, Any],
+) -> Dict[str, Any]:
     score = 100
     critical_flags = []
     market_warnings = []
@@ -536,19 +753,20 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
     dscr = financial_metrics.get("dscr")
     cash_flow = financial_metrics.get("annual_cash_flow_after_debt")
     breakeven = financial_metrics.get("breakeven_occupancy")
-    data_quality_flag = financial_metrics.get("data_quality_flag")
-    valuation_conf = safe_int(valuation_model.get("confidence_score"))
-    price_delta_pct = safe_float(valuation_model.get("price_vs_value_delta_pct"))
-    valuation_status = valuation_model.get("valuation_status", "unknown")
-    comp_count = safe_int(comps_data.get("comp_count"))
-    year_built = safe_int(property_specs.get("yearBuilt"))
+    quality = financial_metrics.get("data_quality_flag")
 
-    missing_rent_metrics = data_quality_flag in {"missing_rent", "missing_price_and_rent"} or (
-        cap_rate is None or dscr is None or cash_flow is None or breakeven is None
+    valuation_conf = safe_int(valuation_model.get("confidence_score"), 25)
+    price_delta_pct = valuation_model.get("price_vs_value_delta_pct")
+    valuation_status = valuation_model.get("valuation_status", "unknown")
+    comp_count = safe_int(comps_data.get("comp_count"), 0)
+    year_built = safe_int(property_specs.get("yearBuilt"), 0)
+
+    missing_financials = quality in {"missing_rent", "missing_price", "missing_price_and_rent"} or any(
+        metric is None for metric in [cap_rate, dscr, cash_flow, breakeven]
     )
 
-    # Missing rent => incomplete underwriting, not zero operating performance.
-    if missing_rent_metrics:
+    # Missing rent/price should route to manual review rather than fake operational distress.
+    if missing_financials:
         market_warnings.append("Rent estimate unavailable; cash-flow metrics could not be computed.")
         score -= 8
     else:
@@ -574,7 +792,7 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
             market_warnings.append(f"Break-even occupancy is high at {breakeven:.2f}%.")
             score -= 8
 
-    if valuation_status in {"overpriced", "slightly_overpriced"}:
+    if valuation_status in {"overpriced", "slightly_overpriced"} and price_delta_pct is not None:
         if price_delta_pct >= 12:
             critical_flags.append(f"Asking price is about {price_delta_pct:.2f}% above model value.")
             score -= 18
@@ -606,9 +824,9 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
     if dscr is not None and dscr < 1.25:
         value_add_opportunities.append("Lower leverage or buy rate down to improve DSCR stability.")
 
-    # Manual review for incomplete underwriting due to missing rent inputs.
-    if missing_rent_metrics:
+    if missing_financials:
         deal_status = "MANUAL_REVIEW"
+        logging.info("underwrite_manual_review reason=missing_financials data_quality_flag=%s", quality)
     else:
         deal_status = "PASS"
         if score < 68 or len(critical_flags) >= 2:
@@ -625,117 +843,136 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
         "executive_summary": summary,
         "risk_analysis": {
             "critical_flags": unique_nonempty(critical_flags),
-            "market_warnings": unique_nonempty(market_warnings)
+            "market_warnings": unique_nonempty(market_warnings),
         },
         "value_add_opportunities": unique_nonempty(value_add_opportunities),
-        "algorithmic_score": score
+        "algorithmic_score": score,
     }
 
 
 # ---------------------------------------------------------
-# AI UNDERWRITER (ENHANCER)
+# AI ENHANCER
 # ---------------------------------------------------------
-def analyze_with_gpt(listing_data, financial_data, computed_metrics, comps_data, property_specs, valuation_model, algorithmic_report):
-    logging.info("🧠 Passing data to AI Underwriter...")
+def analyze_with_gpt(
+    listing_data: Dict[str, Any],
+    financial_data: Dict[str, Any],
+    computed_metrics: Dict[str, Any],
+    comps_data: Dict[str, Any],
+    property_specs: Dict[str, Any],
+    valuation_model: Dict[str, Any],
+    algorithmic_report: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str, Optional[str]]:
+    client = get_openai_client()
+    if client is None:
+        return algorithmic_report, "skipped", "OPENAI_API_KEY not configured"
 
-    if not openai_client:
-        return algorithmic_report
-
-    zillow_price = safe_float(listing_data.get('price') or listing_data.get('zestimate'))
-    description = listing_data.get('description', 'No description provided.')
-    rentcast_price = safe_float(financial_data.get('price'))
-    avg_comp = safe_float(comps_data.get('average_comp_price'))
+    zillow_price = listing_data.get("price") or listing_data.get("zestimate")
+    rentcast_price = financial_data.get("price")
+    avg_comp = comps_data.get("average_comp_price")
+    description = listing_data.get("description", "No description provided.")
 
     prompt = f"""
-    You are a cynical Senior Real Estate Underwriter specializing in the Dallas-Fort Worth (DFW) market.
-    Improve the narrative and risk framing while respecting the deterministic underwriting baseline.
+You are a cynical Senior Real Estate Underwriter specializing in the Dallas-Fort Worth (DFW) market.
+Improve the narrative and risk framing while respecting the deterministic underwriting baseline.
 
-    PROPERTY ASSET:
-    - {property_specs.get('bedrooms')} Beds, {property_specs.get('bathrooms')} Baths, {property_specs.get('sqft')} SqFt. Built in {property_specs.get('yearBuilt')}.
+PROPERTY ASSET:
+- {property_specs.get('bedrooms')} Beds, {property_specs.get('bathrooms')} Baths, {property_specs.get('sqft')} SqFt. Built in {property_specs.get('yearBuilt')}.
 
-    RAW VALUATION DATA:
-    - Zillow Price: ${zillow_price}
-    - RentCast Valuation: ${rentcast_price}
-    - Neighborhood Comp Average (based on {comps_data.get('comp_count')} recent sales): ${avg_comp}
-    - Listing Description: "{description[:2500]}"
+RAW VALUATION DATA:
+- Zillow Price: {zillow_price}
+- RentCast Valuation: {rentcast_price}
+- Neighborhood Comp Average (based on {comps_data.get('comp_count')} recent sales): {avg_comp}
+- Listing Description: "{str(description)[:2500]}"
 
-    RECONCILED VALUATION MODEL:
-    - Estimated Value: ${valuation_model.get('estimated_value')}
-    - Range: ${valuation_model.get('valuation_low')} to ${valuation_model.get('valuation_high')}
-    - Price Delta vs Model: {valuation_model.get('price_vs_value_delta_pct')}%
-    - Valuation Confidence: {valuation_model.get('confidence_score')}/100
+RECONCILED VALUATION MODEL:
+- Estimated Value: {valuation_model.get('estimated_value')}
+- Range: {valuation_model.get('valuation_low')} to {valuation_model.get('valuation_high')}
+- Price Delta vs Model: {valuation_model.get('price_vs_value_delta_pct')}%
+- Valuation Confidence: {valuation_model.get('confidence_score')}/100
 
-    CALCULATED FINANCIAL METRICS:
-    - NOI: ${computed_metrics.get('noi')}
-    - Cap Rate: {computed_metrics.get('cap_rate')}%
-    - DSCR: {computed_metrics.get('dscr')}
-    - Cash Flow After Debt: ${computed_metrics.get('annual_cash_flow_after_debt')}
-    - Data Quality Flag: {computed_metrics.get('data_quality_flag')}
+CALCULATED FINANCIAL METRICS:
+- NOI: {computed_metrics.get('noi')}
+- Cap Rate: {computed_metrics.get('cap_rate')}%
+- DSCR: {computed_metrics.get('dscr')}
+- Cash Flow After Debt: {computed_metrics.get('annual_cash_flow_after_debt')}
+- Data Quality Flag: {computed_metrics.get('data_quality_flag')}
 
-    DETERMINISTIC BASELINE (trust this unless a clear contradiction is present):
-    {json.dumps(algorithmic_report)}
+DETERMINISTIC BASELINE (source of truth unless clear data contradiction):
+{json.dumps(algorithmic_report)}
 
-    Critical instruction:
-    - Do NOT describe missing metrics as dismal, stressed, non-performance, or zero income generation.
-    - If rent, NOI, cap rate, or DSCR are missing because inputs are unavailable, explicitly state analysis is incomplete and requires manual review.
+Critical instructions:
+- Do NOT describe missing metrics as dismal, stressed, non-performance, or zero income generation.
+- If rent, NOI, cap rate, or DSCR are missing because inputs are unavailable, explicitly state analysis is incomplete and requires manual review.
+- Valid deal_status values are strictly: PASS, REJECT, MANUAL_REVIEW.
 
-    You MUST return strictly valid JSON in this exact structure:
-    {{
-        "deal_status": "PASS or REJECT",
-        "confidence_score": 0-100,
-        "executive_summary": "Two sentence brutal summary.",
-        "risk_analysis": {{
-            "critical_flags": ["flag 1", "flag 2"],
-            "market_warnings": ["warning 1"]
-        }},
-        "value_add_opportunities": ["opportunity 1", "opportunity 2"]
-    }}
-    """
+Return strictly valid JSON in this exact structure:
+{{
+  "deal_status": "PASS or REJECT or MANUAL_REVIEW",
+  "confidence_score": 0-100,
+  "executive_summary": "Two sentence brutal summary.",
+  "risk_analysis": {{
+    "critical_flags": ["flag 1", "flag 2"],
+    "market_warnings": ["warning 1"]
+  }},
+  "value_add_opportunities": ["opportunity 1", "opportunity 2"]
+}}
+"""
 
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You output strictly valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
+    for attempt in range(1, 3):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You output strictly valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+            )
+            payload = json.loads(response.choices[0].message.content)
 
-        ai_data = json.loads(response.choices[0].message.content)
-
-        merged = {
-            "deal_status": ai_data.get("deal_status") if ai_data.get("deal_status") in {"PASS", "REJECT", "MANUAL_REVIEW"} else algorithmic_report.get("deal_status"),
-            "confidence_score": int(clamp(safe_int(ai_data.get("confidence_score"), algorithmic_report.get("confidence_score")), 0, 100)),
-            "executive_summary": ai_data.get("executive_summary") or algorithmic_report.get("executive_summary"),
-            "risk_analysis": {
-                "critical_flags": unique_nonempty(
-                    (ai_data.get("risk_analysis", {}).get("critical_flags") or [])
-                    + (algorithmic_report.get("risk_analysis", {}).get("critical_flags") or [])
+            merged = {
+                "deal_status": payload.get("deal_status")
+                if payload.get("deal_status") in {"PASS", "REJECT", "MANUAL_REVIEW"}
+                else algorithmic_report.get("deal_status"),
+                "confidence_score": int(
+                    clamp(
+                        safe_int(payload.get("confidence_score"), algorithmic_report.get("confidence_score")),
+                        0,
+                        100,
+                    )
                 ),
-                "market_warnings": unique_nonempty(
-                    (ai_data.get("risk_analysis", {}).get("market_warnings") or [])
-                    + (algorithmic_report.get("risk_analysis", {}).get("market_warnings") or [])
-                )
-            },
-            "value_add_opportunities": unique_nonempty(
-                (ai_data.get("value_add_opportunities") or [])
-                + (algorithmic_report.get("value_add_opportunities") or [])
-            ),
-            "algorithmic_score": algorithmic_report.get("algorithmic_score")
-        }
+                "executive_summary": payload.get("executive_summary") or algorithmic_report.get("executive_summary"),
+                "risk_analysis": {
+                    "critical_flags": unique_nonempty(
+                        (payload.get("risk_analysis", {}).get("critical_flags") or [])
+                        + (algorithmic_report.get("risk_analysis", {}).get("critical_flags") or [])
+                    ),
+                    "market_warnings": unique_nonempty(
+                        (payload.get("risk_analysis", {}).get("market_warnings") or [])
+                        + (algorithmic_report.get("risk_analysis", {}).get("market_warnings") or [])
+                    ),
+                },
+                "value_add_opportunities": unique_nonempty(
+                    (payload.get("value_add_opportunities") or [])
+                    + (algorithmic_report.get("value_add_opportunities") or [])
+                ),
+                "algorithmic_score": algorithmic_report.get("algorithmic_score"),
+            }
 
-        # Keep hard guardrails from deterministic model.
-        if algorithmic_report.get("deal_status") == "REJECT" and merged["deal_status"] != "REJECT":
-            merged["deal_status"] = "REJECT"
-        if algorithmic_report.get("deal_status") == "MANUAL_REVIEW":
-            merged["deal_status"] = "MANUAL_REVIEW"
+            # Deterministic guardrails remain authoritative.
+            if algorithmic_report.get("deal_status") == "REJECT" and merged["deal_status"] != "REJECT":
+                merged["deal_status"] = "REJECT"
+            if algorithmic_report.get("deal_status") == "MANUAL_REVIEW":
+                merged["deal_status"] = "MANUAL_REVIEW"
 
-        return merged
+            return merged, "ok", None
+        except Exception as exc:
+            if attempt == 2:
+                logging.error("gpt_enhancement_failed error=%s", exc)
+                return algorithmic_report, "failed", f"gpt_error: {exc}"
+            time.sleep(0.8 * attempt)
 
-    except Exception as e:
-        logging.error(f"GPT Underwriter failed, using deterministic report: {e}")
-        return algorithmic_report
+    return algorithmic_report, "failed", "unknown_gpt_error"
 
 
 # ---------------------------------------------------------
@@ -743,94 +980,128 @@ def analyze_with_gpt(listing_data, financial_data, computed_metrics, comps_data,
 # ---------------------------------------------------------
 @app.route(route="AnalyzeProperty", auth_level=func.AuthLevel.ANONYMOUS)
 def AnalyzeProperty(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('🚀 PropScout Logic Engine triggered.')
+    request_id = uuid.uuid4().hex[:10]
+    logging.info("request_start request_id=%s", request_id)
 
-    req_body = {}
-    zillow_url = None
-    address = None
+    auth_error = enforce_api_key_if_configured(req)
+    if auth_error:
+        return auth_error
 
+    req_body: Dict[str, Any] = {}
     try:
-        req_body = req.get_json()
+        parsed = req.get_json()
+        if isinstance(parsed, dict):
+            req_body = parsed
     except ValueError:
         req_body = {}
 
-    if isinstance(req_body, dict):
-        zillow_url = req_body.get('url')
-        address = req_body.get('address')
+    mode_raw = req_body.get("mode") if req_body else None
+    if mode_raw is None:
+        mode_raw = req.params.get("mode")
+    mode = "fast" if str(mode_raw or "").strip().lower() == "fast" else "full"
 
-    # Fallback for clients sending query params or non-JSON body.
-    if not zillow_url:
-        zillow_url = req.params.get('url')
-    if not address:
-        address = req.params.get('address')
+    source_status = make_source_status(mode)
 
-    if not zillow_url:
+    zillow_url_input = (req_body.get("url") if req_body else None) or req.params.get("url")
+    manual_address = (req_body.get("address") if req_body else None) or req.params.get("address")
+
+    zillow_url, validation_error = validate_and_normalize_zillow_url(zillow_url_input)
+    if validation_error:
+        logging.warning("request_validation_failed request_id=%s error=%s", request_id, validation_error)
         return func.HttpResponse(
-            json.dumps({
-                "error": "Missing 'url'. Send JSON like: {\"url\":\"https://www.zillow.com/homedetails/.../\", \"address\":\"optional\"}"
-            }),
+            json.dumps({"error": validation_error}),
             status_code=400,
-            mimetype="application/json"
+            mimetype="application/json",
         )
 
+    address = str(manual_address).strip() if manual_address else extract_address_from_url(zillow_url)
     if not address:
-        address = extract_address_from_url(zillow_url)
-        if not address:
-            return func.HttpResponse(
-                json.dumps({"error": "Could not parse address from URL. Please provide it manually."}),
-                status_code=400,
-                mimetype="application/json"
-            )
+        logging.warning("address_resolution_failed request_id=%s", request_id)
+        return func.HttpResponse(
+            json.dumps({"error": "Could not derive address from URL. Provide 'address' manually."}),
+            status_code=400,
+            mimetype="application/json",
+        )
 
-    report_id = f"{address.replace(' ', '-').replace(',', '').lower()}-{datetime.datetime.utcnow().strftime('%Y%m%d%H%M')}"
+    report_id = build_report_id(address)
 
-    financials = get_rentcast_data(address)
-    neighborhood_comps = get_neighborhood_comps(address)
-    listing_data = scrape_zillow(zillow_url)
+    financials, val_status, val_detail = get_rentcast_data(address)
+    source_status["rentcast_valuation"] = {"status": val_status, "detail": val_detail}
+    logging.info("rentcast_valuation status=%s detail=%s", val_status, val_detail)
+
+    neighborhood_comps, comps_status, comps_detail = get_neighborhood_comps(address)
+    source_status["rentcast_comps"] = {"status": comps_status, "detail": comps_detail}
+    logging.info("rentcast_comps status=%s detail=%s", comps_status, comps_detail)
+
+    listing_data, z_status, z_detail = scrape_zillow(zillow_url)
+    source_status["zillow_scrape"] = {"status": z_status, "detail": z_detail}
+    logging.info("zillow_scrape status=%s detail=%s", z_status, z_detail)
 
     property_specs = {
-        "bedrooms": listing_data.get('bedrooms', 'N/A'),
-        "bathrooms": listing_data.get('bathrooms', 'N/A'),
-        "sqft": listing_data.get('livingArea', 'N/A'),
-        "yearBuilt": listing_data.get('yearBuilt', 'N/A')
+        "bedrooms": listing_data.get("bedrooms"),
+        "bathrooms": listing_data.get("bathrooms"),
+        "sqft": listing_data.get("livingArea"),
+        "yearBuilt": listing_data.get("yearBuilt"),
     }
 
-    listing_price = safe_float(listing_data.get('price'))
-    fallback_price = safe_float(financials.get('price'))
-    price = listing_price or fallback_price or 0
+    listing_price = to_positive_float(listing_data.get("price"))
+    rentcast_price = to_positive_float(financials.get("price"))
+    fallback_price = listing_price or rentcast_price
 
-    rent_low = safe_float(financials.get('rentRange', {}).get('low'), default=0.0)
-    rent_high = safe_float(financials.get('rentRange', {}).get('high'), default=0.0)
-    zillow_rent_zestimate = safe_float(listing_data.get('rentZestimate'), default=0.0)
+    rent_low = to_positive_float((financials.get("rentRange") or {}).get("low"))
+    rent_high = to_positive_float((financials.get("rentRange") or {}).get("high"))
+    rent_zestimate = to_positive_float(listing_data.get("rentZestimate"))
     history_rent = extract_rent_from_listing_history(listing_data)
 
-    # Rent selection priority:
-    # 1) RentCast range midpoint, 2) Zillow rentZestimate, 3) Zillow rent history fallback.
+    # Rent source priority: RentCast midpoint > Zillow rentZestimate > Zillow history > none.
     monthly_rent = None
-    if rent_low > 0 and rent_high > 0:
+    if rent_low is not None and rent_high is not None:
         monthly_rent = (rent_low + rent_high) / 2
-    elif zillow_rent_zestimate > 0:
-        monthly_rent = zillow_rent_zestimate
-    elif history_rent and history_rent > 0:
+        source_status["rent_source"] = "rentcast_midpoint"
+    elif rent_zestimate is not None:
+        monthly_rent = rent_zestimate
+        source_status["rent_source"] = "zillow_rent_zestimate"
+    elif history_rent is not None:
         monthly_rent = history_rent
+        source_status["rent_source"] = "zillow_history"
+    else:
+        source_status["rent_source"] = "none"
 
-    valuation_model = build_valuation_model(listing_data, financials, neighborhood_comps, property_specs, monthly_rent)
+    if source_status["rent_source"] != "rentcast_midpoint":
+        logging.info("rent_fallback_used source=%s", source_status["rent_source"])
 
-    # Use modeled value as fallback purchase price when listing-side pricing is missing.
-    if price <= 0:
-        price = safe_float(valuation_model.get("estimated_value"))
-
-    computed_metrics = calculate_financials(price, monthly_rent)
-    algorithmic_report = run_algorithmic_underwrite(valuation_model, computed_metrics, neighborhood_comps, property_specs)
-    ai_report = analyze_with_gpt(
-        listing_data,
-        financials,
-        computed_metrics,
-        neighborhood_comps,
-        property_specs,
-        valuation_model,
-        algorithmic_report
+    valuation_model = build_valuation_model(
+        listing_data=listing_data,
+        financial_data=financials,
+        comps_data=neighborhood_comps,
+        property_specs=property_specs,
+        monthly_rent=monthly_rent,
     )
+
+    price = fallback_price or to_positive_float(valuation_model.get("estimated_value"))
+    computed_metrics = calculate_financials(price, monthly_rent)
+
+    algorithmic_report = run_algorithmic_underwrite(
+        valuation_model=valuation_model,
+        financial_metrics=computed_metrics,
+        comps_data=neighborhood_comps,
+        property_specs=property_specs,
+    )
+
+    if mode == "fast" and FAST_MODE_SKIP_GPT:
+        ai_report = algorithmic_report
+        source_status["gpt_enhancement"] = {"status": "skipped", "detail": "fast_mode"}
+    else:
+        ai_report, gpt_status, gpt_detail = analyze_with_gpt(
+            listing_data=listing_data,
+            financial_data=financials,
+            computed_metrics=computed_metrics,
+            comps_data=neighborhood_comps,
+            property_specs=property_specs,
+            valuation_model=valuation_model,
+            algorithmic_report=algorithmic_report,
+        )
+        source_status["gpt_enhancement"] = {"status": gpt_status, "detail": gpt_detail}
 
     final_report = {
         "id": report_id,
@@ -838,23 +1109,34 @@ def AnalyzeProperty(req: func.HttpRequest) -> func.HttpResponse:
         "property_specs": property_specs,
         "neighborhood_comps": neighborhood_comps,
         "raw_data_sources": {
-            "rentcast_valuation": financials.get('price'),
-            "zillow_price": listing_data.get('price'),
-            "zillow_zestimate": listing_data.get('zestimate'),
-            "rent_estimate_low": financials.get('rentRange', {}).get('low'),
-            "rent_estimate_high": financials.get('rentRange', {}).get('high'),
-            "zillow_rent_zestimate": listing_data.get('rentZestimate')
+            "rentcast_valuation": financials.get("price"),
+            "zillow_price": listing_data.get("price"),
+            "zillow_zestimate": listing_data.get("zestimate"),
+            "rent_estimate_low": (financials.get("rentRange") or {}).get("low"),
+            "rent_estimate_high": (financials.get("rentRange") or {}).get("high"),
+            "zillow_rent_zestimate": listing_data.get("rentZestimate"),
+            "zillow_history_rent_estimate": history_rent,
         },
         "valuation_model": valuation_model,
         "computed_financials": computed_metrics,
         "algorithmic_underwrite": algorithmic_report,
-        "ai_underwriter": ai_report
+        "ai_underwriter": ai_report,
+        "source_status": source_status,
     }
 
-    try:
-        if container:
-            container.upsert_item(final_report)
-    except Exception as e:
-        logging.error(f"CosmosDB Save Failed: {e}")
+    should_persist = not (mode == "fast" and FAST_MODE_SKIP_PERSISTENCE)
+    if should_persist:
+        container = get_cosmos_container()
+        if container is None:
+            source_status["persistence"] = {"status": "skipped", "detail": "cosmos_not_available"}
+        else:
+            try:
+                container.upsert_item(final_report)
+                source_status["persistence"] = {"status": "ok", "detail": None}
+            except Exception as exc:
+                logging.error("cosmos_persist_failed request_id=%s error=%s", request_id, exc)
+                source_status["persistence"] = {"status": "failed", "detail": str(exc)}
+    else:
+        source_status["persistence"] = {"status": "skipped", "detail": "fast_mode"}
 
     return func.HttpResponse(json.dumps(final_report, indent=4), mimetype="application/json")
