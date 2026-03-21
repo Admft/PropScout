@@ -1,178 +1,660 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PropScout Pro | Enterprise Risk Analyst</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PropScout Pro | Deal Analyzer</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-50 min-h-screen font-sans text-slate-900">
 
-    <header class="bg-slate-900 text-white p-6 shadow-md border-b-4 border-blue-600">
-        <div class="max-w-5xl mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-bold tracking-tight">PropScout <span class="font-light text-blue-400">Pro</span></h1>
-            <span class="text-sm font-medium bg-slate-800 border border-slate-700 px-3 py-1 rounded-full text-slate-300">DFW Commercial Underwriter</span>
+<body class="bg-slate-100 min-h-screen text-slate-900">
+
+    <header class="bg-slate-950 text-white border-b border-slate-800">
+        <div class="max-w-7xl mx-auto px-6 py-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+                <h1 class="text-2xl md:text-3xl font-bold tracking-tight">
+                    PropScout <span class="text-blue-400 font-light">Pro</span>
+                </h1>
+                <p class="text-slate-400 text-sm mt-1">
+                    Instant rental-property underwriting for Zillow listings
+                </p>
+            </div>
+            <div class="flex items-center gap-2 text-xs">
+                <span class="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-300">
+                    Zillow → Analysis
+                </span>
+                <span class="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-300">
+                    Fast + Full Modes
+                </span>
+            </div>
         </div>
     </header>
 
-    <main class="max-w-5xl mx-auto mt-10 p-6 bg-white rounded-xl shadow-sm border border-slate-200">
-        <h2 class="text-xl font-semibold mb-4 text-slate-800">Run Deal Analysis</h2>
-        
-        <div class="flex flex-col md:flex-row gap-4 mb-6">
-            <input type="text" id="zillowUrl" placeholder="Paste Zillow URL here (Required)..." class="flex-[2] p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-            <input type="text" id="propertyAddress" placeholder="Address (Optional - Auto-extracted)" class="flex-1 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-slate-50">
-            <button onclick="analyzeDeal()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg transition-colors shadow-sm">
-                Analyze
-            </button>
-        </div>
-
-        <div id="loading" class="hidden text-center py-12">
-            <div class="animate-spin inline-block w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full mb-4"></div>
-            <p class="text-slate-600 font-medium">Underwriting property... crunching financials and querying GPT-4o.</p>
-        </div>
-
-        <div id="results" class="hidden mt-8 border-t border-slate-200 pt-8">
-            <div class="flex justify-between items-start mb-8">
+    <main class="max-w-7xl mx-auto px-6 py-8">
+        <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+            <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6">
                 <div>
-                    <h3 id="resAddress" class="text-2xl font-bold text-slate-900"></h3>
-                    <div class="flex gap-4 mt-2 text-sm font-medium text-slate-500">
-                        <p>Zillow: <span id="resZillowPrice" class="text-slate-700"></span></p>
-                        <p>RentCast: <span id="resRentcastPrice" class="text-slate-700"></span></p>
+                    <h2 class="text-xl md:text-2xl font-bold text-slate-900">Analyze a Property</h2>
+                    <p class="text-slate-600 mt-2 max-w-3xl">
+                        Paste a Zillow property URL and PropScout will estimate value, project rent-based returns,
+                        flag major risks, and explain whether the deal looks investable or needs manual review.
+                    </p>
+                </div>
+                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-600 max-w-md">
+                    <div class="font-semibold text-slate-800 mb-1">How to use this</div>
+                    <p>
+                        Use <span class="font-semibold">Fast Mode</span> for quicker deterministic screening.
+                        Use <span class="font-semibold">Full Mode</span> if you want AI narrative enhancement too.
+                    </p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 mt-8">
+                <div class="lg:col-span-6">
+                    <label class="block text-sm font-semibold text-slate-700 mb-2">Zillow URL</label>
+                    <input type="text" id="zillowUrl" placeholder="https://www.zillow.com/homedetails/..."
+                        class="w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                </div>
+
+                <div class="lg:col-span-3">
+                    <label class="block text-sm font-semibold text-slate-700 mb-2">Address Override</label>
+                    <input type="text" id="propertyAddress" placeholder="Optional manual address"
+                        class="w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-slate-50" />
+                </div>
+
+                <div class="lg:col-span-2">
+                    <label class="block text-sm font-semibold text-slate-700 mb-2">Mode</label>
+                    <select id="analysisMode"
+                        class="w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white">
+                        <option value="fast" selected>Fast</option>
+                        <option value="full">Full</option>
+                    </select>
+                </div>
+
+                <div class="lg:col-span-1 flex items-end">
+                    <button onclick="analyzeDeal()"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition shadow-sm">
+                        Analyze
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-2">API Key (optional)</label>
+                    <input type="password" id="apiKey" placeholder="Only needed if backend enforces X-API-Key"
+                        class="w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+                </div>
+                <div class="flex items-end">
+                    <div class="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-600">
+                        <span class="font-semibold text-slate-800">Tip:</span>
+                        If a deal comes back as <span class="font-semibold text-amber-700">MANUAL_REVIEW</span>,
+                        that usually means the property may still be interesting, but rent or other inputs were not
+                        strong enough for automated underwriting.
                     </div>
                 </div>
-                <div class="text-right bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <span id="resVerdict" class="text-4xl font-black block tracking-tight"></span>
-                    <span id="resScore" class="text-sm font-bold text-slate-500 uppercase tracking-wide mt-1 block"></span>
+            </div>
+        </section>
+
+        <section id="loading"
+            class="hidden mt-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-10 text-center">
+            <div
+                class="animate-spin inline-block w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full mb-4">
+            </div>
+            <p class="text-slate-700 font-semibold text-lg">Running analysis...</p>
+            <p class="text-slate-500 mt-2">Pulling listing data, valuations, comps, and underwriting signals.</p>
+        </section>
+
+        <section id="errorBox" class="hidden mt-8 bg-red-50 border border-red-200 rounded-2xl p-5">
+            <div class="font-bold text-red-800 mb-1">Something went wrong</div>
+            <p id="errorText" class="text-red-700 text-sm"></p>
+        </section>
+
+        <section id="results" class="hidden mt-8 space-y-8">
+            <!-- Top Summary -->
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                <div class="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-6">
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <h3 id="resAddress" class="text-2xl md:text-3xl font-bold text-slate-900 break-words"></h3>
+                            <span id="resModeBadge" class="px-3 py-1 rounded-full text-xs font-semibold border"></span>
+                        </div>
+
+                        <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+                            <div class="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                                <div class="text-slate-500 font-medium">Zillow Ask</div>
+                                <div id="resZillowPrice" class="text-slate-900 font-bold mt-1"></div>
+                            </div>
+                            <div class="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                                <div class="text-slate-500 font-medium">RentCast Valuation</div>
+                                <div id="resRentcastPrice" class="text-slate-900 font-bold mt-1"></div>
+                            </div>
+                            <div class="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                                <div class="text-slate-500 font-medium">Modeled Value</div>
+                                <div id="resEstimatedValue" class="text-slate-900 font-bold mt-1"></div>
+                            </div>
+                            <div class="bg-slate-50 rounded-xl border border-slate-200 p-3">
+                                <div class="text-slate-500 font-medium">Suggested Offer</div>
+                                <div id="resSuggestedOffer" class="text-slate-900 font-bold mt-1"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="xl:min-w-[320px] bg-slate-950 rounded-2xl p-6 text-white border border-slate-800">
+                        <div class="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Deal Verdict</div>
+                        <div id="resVerdict" class="text-4xl font-black mt-3"></div>
+                        <div id="resScore" class="mt-3 text-slate-300 font-medium"></div>
+                        <div id="resValuationStatus" class="mt-3 text-sm text-slate-300"></div>
+                        <div id="resDelta" class="mt-2 text-sm text-slate-400"></div>
+                    </div>
+                </div>
+
+                <div class="mt-8 bg-blue-950/95 rounded-2xl p-6 border border-blue-900">
+                    <div class="text-xs uppercase tracking-[0.2em] text-blue-300 font-semibold mb-2">Executive Summary
+                    </div>
+                    <p id="resSummary" class="text-blue-50 text-lg leading-relaxed"></p>
                 </div>
             </div>
 
-            <h4 class="font-bold text-slate-800 mb-4 border-b pb-2">Computed Financials</h4>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                <div class="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                    <span class="text-xs text-blue-800 font-bold uppercase tracking-wider block mb-1">Cap Rate</span>
-                    <span id="resCapRate" class="text-2xl font-black text-blue-900"></span>
+            <!-- Key Metrics -->
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                <div class="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                        <h4 class="text-xl font-bold text-slate-900">Key Financial Metrics</h4>
+                        <p class="text-slate-600 mt-1">These are the main numbers investors use to judge rental-property
+                            strength.</p>
+                    </div>
                 </div>
-                <div class="bg-blue-50 p-4 rounded-lg border border-blue-100">
-                    <span class="text-xs text-blue-800 font-bold uppercase tracking-wider block mb-1">DSCR</span>
-                    <span id="resDscr" class="text-2xl font-black text-blue-900"></span>
-                </div>
-                <div class="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <span class="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-1">Annual NOI</span>
-                    <span id="resNoi" class="text-xl font-bold text-slate-700"></span>
-                </div>
-                <div class="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <span class="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-1">Est. Monthly Rent</span>
-                    <span id="resRent" class="text-xl font-bold text-slate-700"></span>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div class="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm font-bold text-blue-900 uppercase tracking-wide">Cap Rate</div>
+                            <button onclick="toggleExplain('capRateHelp')"
+                                class="text-xs px-2 py-1 rounded-full border border-blue-300 text-blue-800 hover:bg-blue-100">What
+                                is this?</button>
+                        </div>
+                        <div id="resCapRate" class="text-3xl font-black text-blue-950 mt-3"></div>
+                        <div id="resCapRateLabel" class="mt-2 text-sm font-semibold"></div>
+                        <div id="capRateHelp" class="hidden mt-4 text-sm text-blue-900 leading-relaxed">
+                            <p><span class="font-semibold">Cap Rate</span> estimates unlevered yield: annual NOI divided
+                                by purchase price.</p>
+                            <p class="mt-2"><span class="font-semibold">General rule of thumb:</span> under 5% is often
+                                weak, around 5–6% is thin, and 6%+ is usually more attractive, though market context
+                                matters a lot.</p>
+                        </div>
+                    </div>
+
+                    <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm font-bold text-indigo-900 uppercase tracking-wide">DSCR</div>
+                            <button onclick="toggleExplain('dscrHelp')"
+                                class="text-xs px-2 py-1 rounded-full border border-indigo-300 text-indigo-800 hover:bg-indigo-100">What
+                                is this?</button>
+                        </div>
+                        <div id="resDscr" class="text-3xl font-black text-indigo-950 mt-3"></div>
+                        <div id="resDscrLabel" class="mt-2 text-sm font-semibold"></div>
+                        <div id="dscrHelp" class="hidden mt-4 text-sm text-indigo-900 leading-relaxed">
+                            <p><span class="font-semibold">DSCR</span> means Debt Service Coverage Ratio. It tells you
+                                how comfortably NOI covers mortgage payments.</p>
+                            <p class="mt-2"><span class="font-semibold">General rule of thumb:</span> below 1.10 is
+                                stressed, 1.10–1.24 is tight, and 1.25+ is healthier.</p>
+                        </div>
+                    </div>
+
+                    <div class="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm font-bold text-emerald-900 uppercase tracking-wide">NOI</div>
+                            <button onclick="toggleExplain('noiHelp')"
+                                class="text-xs px-2 py-1 rounded-full border border-emerald-300 text-emerald-800 hover:bg-emerald-100">What
+                                is this?</button>
+                        </div>
+                        <div id="resNoi" class="text-3xl font-black text-emerald-950 mt-3"></div>
+                        <div id="resNoiLabel" class="mt-2 text-sm font-semibold"></div>
+                        <div id="noiHelp" class="hidden mt-4 text-sm text-emerald-900 leading-relaxed">
+                            <p><span class="font-semibold">NOI</span> is Net Operating Income — rent collected after
+                                operating expenses, but before mortgage payments.</p>
+                            <p class="mt-2">Higher is generally better. Negative or very thin NOI means the property may
+                                struggle even before financing is considered.</p>
+                        </div>
+                    </div>
+
+                    <div class="rounded-2xl border border-amber-200 bg-amber-50 p-5">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm font-bold text-amber-900 uppercase tracking-wide">Break-even Occupancy
+                            </div>
+                            <button onclick="toggleExplain('beHelp')"
+                                class="text-xs px-2 py-1 rounded-full border border-amber-300 text-amber-800 hover:bg-amber-100">What
+                                is this?</button>
+                        </div>
+                        <div id="resBreakeven" class="text-3xl font-black text-amber-950 mt-3"></div>
+                        <div id="resBreakevenLabel" class="mt-2 text-sm font-semibold"></div>
+                        <div id="beHelp" class="hidden mt-4 text-sm text-amber-900 leading-relaxed">
+                            <p><span class="font-semibold">Break-even Occupancy</span> is the occupancy level needed to
+                                cover operating costs plus debt service.</p>
+                            <p class="mt-2"><span class="font-semibold">General rule of thumb:</span> lower is better.
+                                Above ~90% means there is less room for vacancy or operational mistakes.</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <div class="bg-slate-800 p-6 rounded-lg shadow-inner mb-6 text-white">
-                <h4 class="font-bold text-blue-300 mb-2 uppercase text-xs tracking-wider">Executive Summary</h4>
-                <p id="resSummary" class="text-slate-200 leading-relaxed text-lg"></p>
+            <!-- Property + Valuation -->
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                    <h4 class="text-xl font-bold text-slate-900 mb-5">Property Snapshot</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Bedrooms</div>
+                            <div id="resBeds" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Bathrooms</div>
+                            <div id="resBaths" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Square Feet</div>
+                            <div id="resSqft" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Year Built</div>
+                            <div id="resYearBuilt" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                    </div>
+
+                    <div class="mt-6 rounded-xl bg-slate-50 border border-slate-200 p-4">
+                        <div class="text-slate-500 text-sm">Estimated Monthly Rent Used</div>
+                        <div id="resRent" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        <div id="resRentSource" class="text-sm text-slate-600 mt-2"></div>
+                    </div>
+
+                    <div class="mt-6 rounded-xl bg-slate-50 border border-slate-200 p-4">
+                        <div class="text-slate-500 text-sm">Data Quality</div>
+                        <div id="resDataQuality" class="text-lg font-bold text-slate-900 mt-1"></div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                    <h4 class="text-xl font-bold text-slate-900 mb-5">Valuation View</h4>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Valuation Range</div>
+                            <div id="resValuationRange" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 border border-slate-200 p-4">
+                            <div class="text-slate-500 text-sm">Valuation Confidence</div>
+                            <div id="resValuationConfidence" class="text-xl font-bold text-slate-900 mt-1"></div>
+                        </div>
+                    </div>
+
+                    <div class="mt-6">
+                        <div class="flex items-center justify-between gap-3 mb-3">
+                            <h5 class="font-bold text-slate-800">Valuation Signals</h5>
+                            <span class="text-xs text-slate-500">Weighted inputs used by the model</span>
+                        </div>
+                        <div id="resSignals" class="space-y-3"></div>
+                    </div>
+                </div>
             </div>
 
-            <div class="grid md:grid-cols-3 gap-6 mt-6">
-                <div class="bg-red-50 p-5 rounded-lg border border-red-200">
-                    <h4 class="font-bold text-red-800 mb-3 uppercase text-xs tracking-wider flex items-center gap-2">🛑 Critical Flags</h4>
-                    <ul id="resCriticalFlags" class="list-disc pl-5 text-red-700 space-y-2 text-sm font-medium"></ul>
+            <!-- Risks / Opportunities -->
+            <div class="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                <div class="bg-white rounded-2xl border border-red-200 shadow-sm p-6">
+                    <h4 class="font-bold text-red-800 mb-4 text-lg">Critical Flags</h4>
+                    <ul id="resCriticalFlags" class="space-y-3 text-sm text-red-700"></ul>
                 </div>
 
-                <div class="bg-amber-50 p-5 rounded-lg border border-amber-200">
-                    <h4 class="font-bold text-amber-800 mb-3 uppercase text-xs tracking-wider flex items-center gap-2">⚠️ Market Warnings</h4>
-                    <ul id="resWarnings" class="list-disc pl-5 text-amber-700 space-y-2 text-sm font-medium"></ul>
+                <div class="bg-white rounded-2xl border border-amber-200 shadow-sm p-6">
+                    <h4 class="font-bold text-amber-800 mb-4 text-lg">Warnings</h4>
+                    <ul id="resWarnings" class="space-y-3 text-sm text-amber-700"></ul>
                 </div>
 
-                <div class="bg-emerald-50 p-5 rounded-lg border border-emerald-200">
-                    <h4 class="font-bold text-emerald-800 mb-3 uppercase text-xs tracking-wider flex items-center gap-2">💡 Value Add Ops</h4>
-                    <ul id="resValueAdd" class="list-disc pl-5 text-emerald-700 space-y-2 text-sm font-medium"></ul>
+                <div class="bg-white rounded-2xl border border-emerald-200 shadow-sm p-6">
+                    <h4 class="font-bold text-emerald-800 mb-4 text-lg">Value-Add Opportunities</h4>
+                    <ul id="resValueAdd" class="space-y-3 text-sm text-emerald-700"></ul>
                 </div>
             </div>
-        </div>
+
+            <!-- Source Status -->
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                <div class="flex items-center justify-between gap-4 mb-5">
+                    <div>
+                        <h4 class="text-xl font-bold text-slate-900">Source Health & Analysis Context</h4>
+                        <p class="text-slate-600 mt-1">This shows which data sources worked, which were skipped, and
+                            what the system used.</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="sourceStatusGrid"></div>
+            </div>
+        </section>
     </main>
 
     <script>
-        // Helper function for currency formatting
-        const formatCurrency = (num) => num ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num) : "N/A";
+        const API_URL = "http://localhost:7071/api/AnalyzeProperty";
 
-        async function analyzeDeal() {
-            const url = document.getElementById('zillowUrl').value;
-            const address = document.getElementById('propertyAddress').value;
-            
-            if (!url) {
-                alert("A Zillow URL is required to run the analysis.");
+        const formatCurrency = (num) =>
+            num == null ? "N/A" : new Intl.NumberFormat("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 0
+            }).format(num);
+
+        const formatCurrencyPrecise = (num) =>
+            num == null ? "N/A" : new Intl.NumberFormat("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 2
+            }).format(num);
+
+        const formatPercent = (num) =>
+            num == null ? "N/A" : `${num}%`;
+
+        const formatNumber = (num) =>
+            num == null ? "N/A" : String(num);
+
+        const formatWholeNumber = (num) =>
+            num == null ? "N/A" : new Intl.NumberFormat("en-US", {
+                maximumFractionDigits: 0
+            }).format(num);
+
+        const prettyText = (value) => {
+            if (value == null || value === "") return "N/A";
+            return String(value)
+                .replaceAll("_", " ")
+                .replace(/\b\w/g, (c) => c.toUpperCase());
+        };
+
+        function toggleExplain(id) {
+            document.getElementById(id).classList.toggle("hidden");
+        }
+
+        function showError(message) {
+            document.getElementById("errorText").innerText = message;
+            document.getElementById("errorBox").classList.remove("hidden");
+        }
+
+        function hideError() {
+            document.getElementById("errorBox").classList.add("hidden");
+            document.getElementById("errorText").innerText = "";
+        }
+
+        function setMetricLabel(elementId, text, tone) {
+            const el = document.getElementById(elementId);
+            el.innerText = text;
+            el.className = `mt-2 text-sm font-semibold ${tone}`;
+        }
+
+        function toneForStatus(status) {
+            if (status === "PASS") {
+                return {
+                    badge: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                    text: "text-emerald-500"
+                };
+            }
+            if (status === "MANUAL_REVIEW") {
+                return {
+                    badge: "bg-amber-50 text-amber-700 border-amber-200",
+                    text: "text-amber-500"
+                };
+            }
+            return {
+                badge: "bg-red-50 text-red-700 border-red-200",
+                text: "text-red-500"
+            };
+        }
+
+        function classifyCapRate(value) {
+            if (value == null) return ["Not available", "text-slate-500"];
+            if (value < 5) return ["Weak / thin yield", "text-red-600"];
+            if (value < 6) return ["Borderline / modest", "text-amber-600"];
+            return ["Healthy for many investors", "text-emerald-600"];
+        }
+
+        function classifyDSCR(value) {
+            if (value == null) return ["Not available", "text-slate-500"];
+            if (value < 1.10) return ["Stressed debt coverage", "text-red-600"];
+            if (value < 1.25) return ["Tight cushion", "text-amber-600"];
+            return ["Healthier debt coverage", "text-emerald-600"];
+        }
+
+        function classifyNOI(value) {
+            if (value == null) return ["Not available", "text-slate-500"];
+            if (value <= 0) return ["Very weak operating income", "text-red-600"];
+            return ["Positive operating income", "text-emerald-600"];
+        }
+
+        function classifyBreakeven(value) {
+            if (value == null) return ["Not available", "text-slate-500"];
+            if (value > 92) return ["High occupancy required", "text-red-600"];
+            if (value > 85) return ["Tight margin", "text-amber-600"];
+            return ["More breathing room", "text-emerald-600"];
+        }
+
+        function fillList(elementId, items, emptyText, emptyTone = "text-slate-400") {
+            const ul = document.getElementById(elementId);
+            ul.innerHTML = "";
+
+            if (!items || items.length === 0) {
+                ul.innerHTML = `<li class="${emptyTone} italic list-none">• ${emptyText}</li>`;
                 return;
             }
 
-            // Show loading, hide results
-            document.getElementById('loading').classList.remove('hidden');
-            document.getElementById('results').classList.add('hidden');
+            items.forEach(item => {
+                const li = document.createElement("li");
+                li.className = "leading-relaxed";
+                li.innerHTML = `<div class="flex gap-2"><span>•</span><span>${item}</span></div>`;
+                ul.appendChild(li);
+            });
+        }
+
+        function renderSourceStatus(sourceStatus) {
+            const container = document.getElementById("sourceStatusGrid");
+            container.innerHTML = "";
+
+            const items = [
+                ["Mode", prettyText(sourceStatus.mode), "How the request was run"],
+                ["RentCast Valuation", prettyText(sourceStatus.rentcast_valuation?.status), sourceStatus.rentcast_valuation?.detail || "No extra detail"],
+                ["RentCast Comps", prettyText(sourceStatus.rentcast_comps?.status), sourceStatus.rentcast_comps?.detail || "No extra detail"],
+                ["Zillow Scrape", prettyText(sourceStatus.zillow_scrape?.status), sourceStatus.zillow_scrape?.detail || "No extra detail"],
+                ["GPT Enhancement", prettyText(sourceStatus.gpt_enhancement?.status), sourceStatus.gpt_enhancement?.detail || "No extra detail"],
+                ["Persistence", prettyText(sourceStatus.persistence?.status), sourceStatus.persistence?.detail || "No extra detail"],
+                ["Rent Source Used", prettyText(sourceStatus.rent_source), "This is the rent input the model actually used"]
+            ];
+
+            items.forEach(([title, status, detail]) => {
+                const card = document.createElement("div");
+                card.className = "rounded-xl border border-slate-200 bg-slate-50 p-4";
+                card.innerHTML = `
+                    <div class="text-sm font-bold text-slate-900">${title}</div>
+                    <div class="mt-2 text-base font-semibold text-slate-800">${status}</div>
+                    <div class="mt-2 text-sm text-slate-600 leading-relaxed">${detail}</div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function renderSignals(signals) {
+            const container = document.getElementById("resSignals");
+            container.innerHTML = "";
+
+            if (!signals || signals.length === 0) {
+                container.innerHTML = `<div class="text-slate-500 italic">No valuation signals available.</div>`;
+                return;
+            }
+
+            signals.forEach(signal => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "rounded-xl border border-slate-200 bg-slate-50 p-4";
+
+                const outlierBadge = signal.outlier
+                    ? `<span class="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200">Outlier downweighted</span>`
+                    : `<span class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">Normal signal</span>`;
+
+                wrapper.innerHTML = `
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div>
+                            <div class="font-bold text-slate-900">${prettyText(signal.name)}</div>
+                            <div class="text-sm text-slate-600 mt-1">Signal Value: ${formatCurrencyPrecise(signal.value)}</div>
+                        </div>
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <span class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 border border-slate-300">
+                                Base Weight: ${signal.base_weight}
+                            </span>
+                            <span class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 border border-slate-300">
+                                Adjusted Weight: ${signal.adjusted_weight}
+                            </span>
+                            ${outlierBadge}
+                        </div>
+                    </div>
+                `;
+                container.appendChild(wrapper);
+            });
+        }
+
+        async function analyzeDeal() {
+            hideError();
+            document.getElementById("results").classList.add("hidden");
+            document.getElementById("loading").classList.remove("hidden");
+
+            const url = document.getElementById("zillowUrl").value.trim();
+            const address = document.getElementById("propertyAddress").value.trim();
+            const mode = document.getElementById("analysisMode").value;
+            const apiKey = document.getElementById("apiKey").value.trim();
+
+            if (!url) {
+                document.getElementById("loading").classList.add("hidden");
+                showError("A Zillow URL is required.");
+                return;
+            }
+
+            const headers = {
+                "Content-Type": "application/json"
+            };
+
+            if (apiKey) {
+                headers["X-API-Key"] = apiKey;
+            }
 
             try {
-                const response = await fetch('http://localhost:7071/api/AnalyzeProperty', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url, address: address })
+                const response = await fetch(API_URL, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                        url,
+                        address: address || undefined,
+                        mode
+                    })
                 });
 
-                const data = await response.json();
-                
-                if (data.error) {
-                    alert("API Error: " + data.error);
-                    document.getElementById('loading').classList.add('hidden');
-                    return;
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
                 }
 
-                // 1. Populate Header & Raw Data
-                document.getElementById('resAddress').innerText = data.address.toUpperCase();
-                document.getElementById('resZillowPrice').innerText = formatCurrency(data.raw_data_sources.zillow_price);
-                document.getElementById('resRentcastPrice').innerText = formatCurrency(data.raw_data_sources.rentcast_valuation);
-                
-                // 2. Populate Financials
-                document.getElementById('resCapRate').innerText = data.computed_financials.cap_rate + "%";
-                document.getElementById('resDscr').innerText = data.computed_financials.dscr;
-                document.getElementById('resNoi').innerText = formatCurrency(data.computed_financials.noi);
-                document.getElementById('resRent').innerText = formatCurrency(data.computed_financials.monthly_rent_est);
+                const verdict = data.ai_underwriter?.deal_status || "UNKNOWN";
+                const tone = toneForStatus(verdict);
 
-                // 3. Populate AI Verdict
-                const verdictEl = document.getElementById('resVerdict');
-                const status = data.ai_underwriter.deal_status;
-                verdictEl.innerText = status;
-                
-                if(status === "PASS") verdictEl.className = "text-4xl font-black block tracking-tight text-emerald-600";
-                else verdictEl.className = "text-4xl font-black block tracking-tight text-red-600";
+                document.getElementById("resAddress").innerText = data.address || "Unknown Address";
 
-                document.getElementById('resScore').innerText = "Confidence Score: " + data.ai_underwriter.confidence_score + "/100";
-                document.getElementById('resSummary').innerText = data.ai_underwriter.executive_summary;
+                const modeBadge = document.getElementById("resModeBadge");
+                modeBadge.innerText = prettyText(data.source_status?.mode || mode);
+                modeBadge.className = `px-3 py-1 rounded-full text-xs font-semibold border ${data.source_status?.mode === "fast"
+                    ? "bg-blue-50 text-blue-700 border-blue-200"
+                    : "bg-violet-50 text-violet-700 border-violet-200"}`;
 
-                // 4. Populate Lists (Helper function to clear and fill ul elements)
-                const fillList = (elementId, items) => {
-                    const ul = document.getElementById(elementId);
-                    ul.innerHTML = "";
-                    if (!items || items.length === 0) {
-                        ul.innerHTML = "<li class='text-slate-400 italic list-none'>None flagged.</li>";
-                        return;
-                    }
-                    items.forEach(item => {
-                        let li = document.createElement("li");
-                        li.innerText = item;
-                        ul.appendChild(li);
-                    });
-                };
+                document.getElementById("resZillowPrice").innerText = formatCurrency(data.raw_data_sources?.zillow_price);
+                document.getElementById("resRentcastPrice").innerText = formatCurrency(data.raw_data_sources?.rentcast_valuation);
+                document.getElementById("resEstimatedValue").innerText = formatCurrency(data.valuation_model?.estimated_value);
+                document.getElementById("resSuggestedOffer").innerText = formatCurrency(data.valuation_model?.suggested_offer);
 
-                fillList('resCriticalFlags', data.ai_underwriter.risk_analysis.critical_flags);
-                fillList('resWarnings', data.ai_underwriter.risk_analysis.market_warnings);
-                fillList('resValueAdd', data.ai_underwriter.value_add_opportunities);
+                const verdictEl = document.getElementById("resVerdict");
+                verdictEl.innerText = verdict;
+                verdictEl.className = `text-4xl font-black mt-3 ${tone.text}`;
 
-                // Hide loading, show results
-                document.getElementById('loading').classList.add('hidden');
-                document.getElementById('results').classList.remove('hidden');
+                document.getElementById("resScore").innerText =
+                    `Confidence Score: ${formatNumber(data.ai_underwriter?.confidence_score)}/100`;
+
+                document.getElementById("resValuationStatus").innerText =
+                    `Valuation Status: ${prettyText(data.valuation_model?.valuation_status)}`;
+
+                const deltaPct = data.valuation_model?.price_vs_value_delta_pct;
+                const deltaAmt = data.valuation_model?.price_vs_value_delta;
+                document.getElementById("resDelta").innerText =
+                    deltaPct == null && deltaAmt == null
+                        ? "Price vs value delta: N/A"
+                        : `Price vs value delta: ${formatCurrency(deltaAmt)} (${formatPercent(deltaPct)})`;
+
+                document.getElementById("resSummary").innerText =
+                    data.ai_underwriter?.executive_summary || "No executive summary available.";
+
+                document.getElementById("resCapRate").innerText = formatPercent(data.computed_financials?.cap_rate);
+                document.getElementById("resDscr").innerText = formatNumber(data.computed_financials?.dscr);
+                document.getElementById("resNoi").innerText = formatCurrency(data.computed_financials?.noi);
+                document.getElementById("resBreakeven").innerText = formatPercent(data.computed_financials?.breakeven_occupancy);
+
+                const [capText, capTone] = classifyCapRate(data.computed_financials?.cap_rate);
+                const [dscrText, dscrTone] = classifyDSCR(data.computed_financials?.dscr);
+                const [noiText, noiTone] = classifyNOI(data.computed_financials?.noi);
+                const [beText, beTone] = classifyBreakeven(data.computed_financials?.breakeven_occupancy);
+
+                setMetricLabel("resCapRateLabel", capText, capTone);
+                setMetricLabel("resDscrLabel", dscrText, dscrTone);
+                setMetricLabel("resNoiLabel", noiText, noiTone);
+                setMetricLabel("resBreakevenLabel", beText, beTone);
+
+                document.getElementById("resBeds").innerText = formatNumber(data.property_specs?.bedrooms);
+                document.getElementById("resBaths").innerText = formatNumber(data.property_specs?.bathrooms);
+                document.getElementById("resSqft").innerText = formatWholeNumber(data.property_specs?.sqft);
+                document.getElementById("resYearBuilt").innerText = formatNumber(data.property_specs?.yearBuilt);
+
+                document.getElementById("resRent").innerText = formatCurrency(data.computed_financials?.monthly_rent_est);
+                document.getElementById("resRentSource").innerText =
+                    `Rent source used: ${prettyText(data.source_status?.rent_source)}`;
+
+                document.getElementById("resDataQuality").innerText =
+                    prettyText(data.computed_financials?.data_quality_flag);
+
+                document.getElementById("resValuationRange").innerText =
+                    `${formatCurrency(data.valuation_model?.valuation_low)} to ${formatCurrency(data.valuation_model?.valuation_high)}`;
+
+                document.getElementById("resValuationConfidence").innerText =
+                    `${formatNumber(data.valuation_model?.confidence_score)}/100`;
+
+                renderSignals(data.valuation_model?.signals || []);
+
+                fillList(
+                    "resCriticalFlags",
+                    data.ai_underwriter?.risk_analysis?.critical_flags,
+                    "No critical flags were raised."
+                );
+                fillList(
+                    "resWarnings",
+                    data.ai_underwriter?.risk_analysis?.market_warnings,
+                    "No warnings were raised."
+                );
+                fillList(
+                    "resValueAdd",
+                    data.ai_underwriter?.value_add_opportunities,
+                    "No obvious value-add opportunities were identified."
+                );
+
+                renderSourceStatus(data.source_status || {});
+
+                document.getElementById("loading").classList.add("hidden");
+                document.getElementById("results").classList.remove("hidden");
+                window.scrollTo({ top: document.getElementById("results").offsetTop - 20, behavior: "smooth" });
 
             } catch (error) {
-                alert("Error connecting to the Risk Engine. Make sure 'func start' is running in your terminal.");
                 console.error(error);
-                document.getElementById('loading').classList.add('hidden');
+                document.getElementById("loading").classList.add("hidden");
+                showError(error.message || "Failed to connect to the analysis API.");
             }
         }
     </script>
 </body>
+
 </html>
