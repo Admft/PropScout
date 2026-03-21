@@ -79,6 +79,90 @@ def unique_nonempty(items):
     return out
 
 
+def parse_rent_amount(value):
+    """Parse a plausible monthly rent from mixed numeric/string values."""
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        amount = float(value)
+    elif isinstance(value, str):
+        cleaned = re.sub(r"[^\d.]", "", value)
+        if not cleaned:
+            return None
+        amount = safe_float(cleaned, default=0.0)
+    else:
+        return None
+
+    # Guardrail: reject implausible monthly rents.
+    if amount <= 0 or amount < 300 or amount > 50000:
+        return None
+    return amount
+
+
+def extract_rent_from_listing_history(listing_data):
+    """
+    Best-effort rent fallback from Zillow history-like arrays.
+    Handles inconsistent scraper schemas and returns the most recent rent-like event.
+    """
+    if not isinstance(listing_data, dict):
+        return None
+
+    history_candidates = []
+    for key, value in listing_data.items():
+        key_l = str(key).lower()
+        if isinstance(value, list) and ("history" in key_l or "price" in key_l or "event" in key_l):
+            history_candidates.append(value)
+
+    rent_events = []
+    rent_keywords = ("rent", "rental", "leased", "lease")
+    rent_value_keys = ("rent", "rentalprice", "monthlyrent", "price", "listprice", "amount")
+    date_keys = ("date", "eventdate", "posteddate", "time", "datetime")
+
+    for history in history_candidates:
+        if not isinstance(history, list):
+            continue
+
+        for idx, item in enumerate(history):
+            if not isinstance(item, dict):
+                continue
+
+            text_blob = " ".join(
+                str(item.get(k, "")).lower()
+                for k in ("event", "eventType", "type", "description", "source", "status")
+            )
+            has_rent_signal = any(keyword in text_blob for keyword in rent_keywords)
+
+            amount = None
+            for key in rent_value_keys:
+                for candidate_key in (key, key.title(), key.upper()):
+                    if candidate_key in item:
+                        amount = parse_rent_amount(item.get(candidate_key))
+                        if amount:
+                            break
+                if amount:
+                    break
+
+            if not has_rent_signal or not amount:
+                continue
+
+            # Use max parsed date digits as a lightweight recency score.
+            recency = 0
+            for dkey in date_keys:
+                if dkey in item and item.get(dkey) is not None:
+                    digits = re.sub(r"\D", "", str(item.get(dkey)))
+                    if len(digits) >= 8:
+                        recency = max(recency, safe_int(digits[:14], 0))
+
+            rent_events.append((recency, idx, amount))
+
+    if not rent_events:
+        return None
+
+    rent_events.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return round(rent_events[0][2], 2)
+
+
 # ---------------------------------------------------------
 # HELPER: AUTO-PARSE URL
 # ---------------------------------------------------------
@@ -246,8 +330,11 @@ def build_valuation_model(listing_data, financial_data, comps_data, property_spe
         comp_ppsf_value = comp_ppsf * sqft
         signals.append({"name": "comps_price_per_sqft", "value": comp_ppsf_value, "weight": 0.18})
 
-    if monthly_rent > 0:
-        annual_gross = monthly_rent * 12
+    monthly_rent_value = safe_float(monthly_rent, default=0.0)
+    has_rent = monthly_rent_value > 0
+
+    if has_rent:
+        annual_gross = monthly_rent_value * 12
         expense_ratio = 0.38
         if year_built and year_built < 1990:
             expense_ratio += 0.03
@@ -306,7 +393,8 @@ def build_valuation_model(listing_data, financial_data, comps_data, property_spe
     confidence -= min(30, int(dispersion_ratio * 100))
     confidence -= 6 if len(signals) < 4 else 0
     confidence -= 8 if comp_count < 3 else 0
-    confidence -= 6 if monthly_rent <= 0 else 0
+    # Missing rent should reduce confidence, but not imply zero-income distress.
+    confidence -= 6 if not has_rent else 0
     confidence -= 5 if rentcast_price <= 0 else 0
     confidence += 4 if len(signals) >= 6 else 0
     confidence = clamp(confidence, 25, 95)
@@ -367,38 +455,49 @@ def build_valuation_model(listing_data, financial_data, comps_data, property_spe
 def calculate_financials(price, monthly_rent):
     logging.info("🧮 Crunching hard financial metrics...")
 
-    price = safe_float(price)
-    monthly_rent = safe_float(monthly_rent)
+    price_value = safe_float(price, default=0.0)
+    monthly_rent_value = safe_float(monthly_rent, default=0.0)
+    has_price = price_value > 0
+    has_rent = monthly_rent_value > 0
 
-    if price <= 0 or monthly_rent <= 0:
+    # Business logic: missing rent is unknown input, not zero performance.
+    if not has_price or not has_rent:
+        if has_price and not has_rent:
+            data_quality_flag = "missing_rent"
+        elif not has_price and not has_rent:
+            data_quality_flag = "missing_price_and_rent"
+        else:
+            data_quality_flag = "missing_price"
+
         return {
-            "purchase_price": round(price, 2),
-            "monthly_rent_est": round(monthly_rent, 2),
-            "annual_gross_rent": 0,
-            "annual_expenses_est": 0,
-            "noi": 0,
-            "cap_rate": 0,
-            "dscr": 0,
-            "annual_debt_service": 0,
-            "annual_cash_flow_after_debt": 0,
-            "breakeven_occupancy": 0
+            "purchase_price": round(price_value, 2) if has_price else None,
+            "monthly_rent_est": round(monthly_rent_value, 2) if has_rent else None,
+            "annual_gross_rent": None,
+            "annual_expenses_est": None,
+            "noi": None,
+            "cap_rate": None,
+            "dscr": None,
+            "annual_debt_service": None,
+            "annual_cash_flow_after_debt": None,
+            "breakeven_occupancy": None,
+            "data_quality_flag": data_quality_flag
         }
 
-    annual_gross_rent = monthly_rent * 12
+    annual_gross_rent = monthly_rent_value * 12
     vacancy = annual_gross_rent * 0.05
     effective_gross_income = annual_gross_rent - vacancy
 
-    taxes = price * 0.022
-    insurance = price * 0.005
-    maintenance = price * 0.010
+    taxes = price_value * 0.022
+    insurance = price_value * 0.005
+    maintenance = price_value * 0.010
     capex_reserve = annual_gross_rent * 0.05
     property_mgmt = effective_gross_income * 0.08
 
     annual_expenses = taxes + insurance + maintenance + capex_reserve + property_mgmt
     noi = effective_gross_income - annual_expenses
-    cap_rate = (noi / price) * 100 if price > 0 else 0
+    cap_rate = (noi / price_value) * 100 if price_value > 0 else None
 
-    principal = price * 0.80
+    principal = price_value * 0.80
     monthly_rate = 0.07 / 12
     n_payments = 360
 
@@ -410,8 +509,8 @@ def calculate_financials(price, monthly_rent):
     breakeven_occupancy = (annual_expenses + annual_debt_service) / annual_gross_rent if annual_gross_rent > 0 else 0
 
     return {
-        "purchase_price": round(price, 2),
-        "monthly_rent_est": round(monthly_rent, 2),
+        "purchase_price": round(price_value, 2),
+        "monthly_rent_est": round(monthly_rent_value, 2),
         "annual_gross_rent": round(annual_gross_rent, 2),
         "annual_expenses_est": round(annual_expenses, 2),
         "noi": round(noi, 2),
@@ -419,7 +518,8 @@ def calculate_financials(price, monthly_rent):
         "dscr": round(dscr, 2),
         "annual_debt_service": round(annual_debt_service, 2),
         "annual_cash_flow_after_debt": round(annual_cash_flow_after_debt, 2),
-        "breakeven_occupancy": round(breakeven_occupancy * 100, 2)
+        "breakeven_occupancy": round(breakeven_occupancy * 100, 2),
+        "data_quality_flag": "ok"
     }
 
 
@@ -432,37 +532,47 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
     market_warnings = []
     value_add_opportunities = []
 
-    cap_rate = safe_float(financial_metrics.get("cap_rate"))
-    dscr = safe_float(financial_metrics.get("dscr"))
-    cash_flow = safe_float(financial_metrics.get("annual_cash_flow_after_debt"))
-    breakeven = safe_float(financial_metrics.get("breakeven_occupancy"))
+    cap_rate = financial_metrics.get("cap_rate")
+    dscr = financial_metrics.get("dscr")
+    cash_flow = financial_metrics.get("annual_cash_flow_after_debt")
+    breakeven = financial_metrics.get("breakeven_occupancy")
+    data_quality_flag = financial_metrics.get("data_quality_flag")
     valuation_conf = safe_int(valuation_model.get("confidence_score"))
     price_delta_pct = safe_float(valuation_model.get("price_vs_value_delta_pct"))
     valuation_status = valuation_model.get("valuation_status", "unknown")
     comp_count = safe_int(comps_data.get("comp_count"))
     year_built = safe_int(property_specs.get("yearBuilt"))
 
-    if cap_rate < 5.0:
-        critical_flags.append(f"Cap rate is weak at {cap_rate:.2f}% (<5.0%).")
-        score -= 22
-    elif cap_rate < 6.0:
-        market_warnings.append(f"Cap rate is thin at {cap_rate:.2f}%; margin for error is low.")
-        score -= 10
+    missing_rent_metrics = data_quality_flag in {"missing_rent", "missing_price_and_rent"} or (
+        cap_rate is None or dscr is None or cash_flow is None or breakeven is None
+    )
 
-    if dscr < 1.10:
-        critical_flags.append(f"DSCR is {dscr:.2f}; debt coverage is stressed.")
-        score -= 28
-    elif dscr < 1.25:
-        market_warnings.append(f"DSCR is only {dscr:.2f}; financing cushion is limited.")
-        score -= 12
-
-    if cash_flow < 0:
-        critical_flags.append("Annual cash flow after debt service is negative.")
-        score -= 16
-
-    if breakeven > 92:
-        market_warnings.append(f"Break-even occupancy is high at {breakeven:.2f}%.")
+    # Missing rent => incomplete underwriting, not zero operating performance.
+    if missing_rent_metrics:
+        market_warnings.append("Rent estimate unavailable; cash-flow metrics could not be computed.")
         score -= 8
+    else:
+        if cap_rate < 5.0:
+            critical_flags.append(f"Cap rate is weak at {cap_rate:.2f}% (<5.0%).")
+            score -= 22
+        elif cap_rate < 6.0:
+            market_warnings.append(f"Cap rate is thin at {cap_rate:.2f}%; margin for error is low.")
+            score -= 10
+
+        if dscr < 1.10:
+            critical_flags.append(f"DSCR is {dscr:.2f}; debt coverage is stressed.")
+            score -= 28
+        elif dscr < 1.25:
+            market_warnings.append(f"DSCR is only {dscr:.2f}; financing cushion is limited.")
+            score -= 12
+
+        if cash_flow < 0:
+            critical_flags.append("Annual cash flow after debt service is negative.")
+            score -= 16
+
+        if breakeven > 92:
+            market_warnings.append(f"Break-even occupancy is high at {breakeven:.2f}%.")
+            score -= 8
 
     if valuation_status in {"overpriced", "slightly_overpriced"}:
         if price_delta_pct >= 12:
@@ -491,14 +601,18 @@ def run_algorithmic_underwrite(valuation_model, financial_metrics, comps_data, p
 
     if valuation_status == "overpriced":
         value_add_opportunities.append("Offer below ask and anchor to comp median plus repair reserve.")
-    if cap_rate < 6.0:
+    if cap_rate is not None and cap_rate < 6.0:
         value_add_opportunities.append("Increase NOI via rent optimization and operating expense cuts before refinance.")
-    if dscr < 1.25:
+    if dscr is not None and dscr < 1.25:
         value_add_opportunities.append("Lower leverage or buy rate down to improve DSCR stability.")
 
-    deal_status = "PASS"
-    if score < 68 or len(critical_flags) >= 2:
-        deal_status = "REJECT"
+    # Manual review for incomplete underwriting due to missing rent inputs.
+    if missing_rent_metrics:
+        deal_status = "MANUAL_REVIEW"
+    else:
+        deal_status = "PASS"
+        if score < 68 or len(critical_flags) >= 2:
+            deal_status = "REJECT"
 
     summary = (
         f"Model score is {score}/100 with valuation confidence {valuation_conf}/100. "
@@ -556,9 +670,14 @@ def analyze_with_gpt(listing_data, financial_data, computed_metrics, comps_data,
     - Cap Rate: {computed_metrics.get('cap_rate')}%
     - DSCR: {computed_metrics.get('dscr')}
     - Cash Flow After Debt: ${computed_metrics.get('annual_cash_flow_after_debt')}
+    - Data Quality Flag: {computed_metrics.get('data_quality_flag')}
 
     DETERMINISTIC BASELINE (trust this unless a clear contradiction is present):
     {json.dumps(algorithmic_report)}
+
+    Critical instruction:
+    - Do NOT describe missing metrics as dismal, stressed, non-performance, or zero income generation.
+    - If rent, NOI, cap rate, or DSCR are missing because inputs are unavailable, explicitly state analysis is incomplete and requires manual review.
 
     You MUST return strictly valid JSON in this exact structure:
     {{
@@ -586,7 +705,7 @@ def analyze_with_gpt(listing_data, financial_data, computed_metrics, comps_data,
         ai_data = json.loads(response.choices[0].message.content)
 
         merged = {
-            "deal_status": ai_data.get("deal_status") if ai_data.get("deal_status") in {"PASS", "REJECT"} else algorithmic_report.get("deal_status"),
+            "deal_status": ai_data.get("deal_status") if ai_data.get("deal_status") in {"PASS", "REJECT", "MANUAL_REVIEW"} else algorithmic_report.get("deal_status"),
             "confidence_score": int(clamp(safe_int(ai_data.get("confidence_score"), algorithmic_report.get("confidence_score")), 0, 100)),
             "executive_summary": ai_data.get("executive_summary") or algorithmic_report.get("executive_summary"),
             "risk_analysis": {
@@ -607,8 +726,10 @@ def analyze_with_gpt(listing_data, financial_data, computed_metrics, comps_data,
         }
 
         # Keep hard guardrails from deterministic model.
-        if algorithmic_report.get("deal_status") == "REJECT" and merged["deal_status"] == "PASS":
+        if algorithmic_report.get("deal_status") == "REJECT" and merged["deal_status"] != "REJECT":
             merged["deal_status"] = "REJECT"
+        if algorithmic_report.get("deal_status") == "MANUAL_REVIEW":
+            merged["deal_status"] = "MANUAL_REVIEW"
 
         return merged
 
@@ -678,12 +799,20 @@ def AnalyzeProperty(req: func.HttpRequest) -> func.HttpResponse:
     fallback_price = safe_float(financials.get('price'))
     price = listing_price or fallback_price or 0
 
-    rent_low = safe_float(financials.get('rentRange', {}).get('low'))
-    rent_high = safe_float(financials.get('rentRange', {}).get('high'))
-    monthly_rent = (rent_low + rent_high) / 2 if rent_low > 0 and rent_high > 0 else 0
+    rent_low = safe_float(financials.get('rentRange', {}).get('low'), default=0.0)
+    rent_high = safe_float(financials.get('rentRange', {}).get('high'), default=0.0)
+    zillow_rent_zestimate = safe_float(listing_data.get('rentZestimate'), default=0.0)
+    history_rent = extract_rent_from_listing_history(listing_data)
 
-    if monthly_rent <= 0:
-        monthly_rent = safe_float(listing_data.get('rentZestimate'))
+    # Rent selection priority:
+    # 1) RentCast range midpoint, 2) Zillow rentZestimate, 3) Zillow rent history fallback.
+    monthly_rent = None
+    if rent_low > 0 and rent_high > 0:
+        monthly_rent = (rent_low + rent_high) / 2
+    elif zillow_rent_zestimate > 0:
+        monthly_rent = zillow_rent_zestimate
+    elif history_rent and history_rent > 0:
+        monthly_rent = history_rent
 
     valuation_model = build_valuation_model(listing_data, financials, neighborhood_comps, property_specs, monthly_rent)
 
