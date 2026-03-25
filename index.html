@@ -102,8 +102,11 @@
             <div
                 class="animate-spin inline-block w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full mb-4">
             </div>
-            <p class="text-slate-700 font-semibold text-lg">Running analysis...</p>
-            <p class="text-slate-500 mt-2">Pulling listing data, valuations, comps, and underwriting signals.</p>
+            <p id="loadingTitle" class="text-slate-700 font-semibold text-lg">Running analysis...</p>
+            <p id="loadingText" class="text-slate-500 mt-2">Preparing request.</p>
+            <div class="mt-5 max-w-2xl mx-auto text-left">
+                <div id="loadingStepPills" class="flex flex-wrap gap-2 justify-center"></div>
+            </div>
         </section>
 
         <section id="errorBox" class="hidden mt-8 bg-red-50 border border-red-200 rounded-2xl p-5">
@@ -273,6 +276,12 @@
                         <div class="text-slate-500 text-sm">Data Quality</div>
                         <div id="resDataQuality" class="text-lg font-bold text-slate-900 mt-1"></div>
                     </div>
+
+                    <div class="mt-6 rounded-xl bg-slate-50 border border-slate-200 p-4">
+                        <div class="text-slate-500 text-sm">Engine Fit</div>
+                        <div id="resEngineFit" class="text-lg font-bold text-slate-900 mt-1"></div>
+                        <div id="resEngineFitDetail" class="text-sm text-slate-600 mt-2 leading-relaxed"></div>
+                    </div>
                 </div>
 
                 <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
@@ -329,6 +338,59 @@
 
                 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4" id="sourceStatusGrid"></div>
             </div>
+
+            <section id="fullModeSection" class="hidden space-y-8">
+                <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8">
+                    <div class="flex items-center justify-between gap-4 mb-5">
+                        <div>
+                            <h4 class="text-xl font-bold text-slate-900">Full Mode Second Opinion</h4>
+                            <p class="text-slate-600 mt-1">Evidence-bound AI adjustments layered on top of the deterministic baseline.</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                            <div class="text-sm font-bold text-slate-900 uppercase tracking-wide">Adjustment Summary</div>
+                            <div id="resFullModeSummary" class="mt-3 text-slate-800 font-semibold"></div>
+                            <div id="resFullModeComps" class="mt-3 text-sm text-slate-600 leading-relaxed"></div>
+                        </div>
+
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+                            <div class="text-sm font-bold text-slate-900 uppercase tracking-wide">Adjusted Financials</div>
+                            <div class="grid grid-cols-2 gap-3 mt-4 text-sm">
+                                <div>
+                                    <div class="text-slate-500">Monthly Rent</div>
+                                    <div id="resAdjustedRent" class="font-bold text-slate-900 mt-1"></div>
+                                </div>
+                                <div>
+                                    <div class="text-slate-500">Cap Rate</div>
+                                    <div id="resAdjustedCapRate" class="font-bold text-slate-900 mt-1"></div>
+                                </div>
+                                <div>
+                                    <div class="text-slate-500">DSCR</div>
+                                    <div id="resAdjustedDscr" class="font-bold text-slate-900 mt-1"></div>
+                                </div>
+                                <div>
+                                    <div class="text-slate-500">Cash Flow After Debt</div>
+                                    <div id="resAdjustedCashFlow" class="font-bold text-slate-900 mt-1"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6">
+                        <div class="rounded-2xl border border-slate-200 p-5">
+                            <div class="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">Adjusted Assumptions</div>
+                            <div id="resAdjustedAssumptions" class="space-y-3"></div>
+                        </div>
+
+                        <div class="rounded-2xl border border-slate-200 p-5">
+                            <div class="text-sm font-bold text-slate-900 uppercase tracking-wide mb-4">Diff vs Baseline</div>
+                            <div id="resFullModeDiff" class="space-y-3"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </section>
     </main>
 
@@ -360,12 +422,127 @@
                 maximumFractionDigits: 0
             }).format(num);
 
+        let loadingTimer = null;
+        let loadingStepIndex = 0;
+
         const prettyText = (value) => {
             if (value == null || value === "") return "N/A";
             return String(value)
                 .replaceAll("_", " ")
                 .replace(/\b\w/g, (c) => c.toUpperCase());
         };
+
+        function getLoadingSteps(mode) {
+            const steps = [
+                "Validating Zillow homedetails URL",
+                "Scraping Zillow listing data",
+                "Inferring property type and unit context",
+                "Fetching RentCast valuation",
+                "Fetching RentCast sales comps",
+                "Selecting rent source",
+                "Building valuation model",
+                "Calculating financial metrics",
+                "Running deterministic underwriting"
+            ];
+
+            if (mode === "full") {
+                steps.push(
+                    "Running evidence-bound AI second opinion",
+                    "Computing adjusted scenario and diff"
+                );
+            }
+
+            return steps;
+        }
+
+        function renderLoadingStepPills(steps, activeIndex) {
+            const container = document.getElementById("loadingStepPills");
+            container.innerHTML = "";
+
+            steps.forEach((step, index) => {
+                const pill = document.createElement("div");
+                const isActive = index === activeIndex;
+                const isComplete = index < activeIndex;
+                pill.className = `px-3 py-2 rounded-full text-xs font-semibold border ${isActive
+                    ? "bg-blue-50 text-blue-700 border-blue-200"
+                    : isComplete
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : "bg-slate-50 text-slate-500 border-slate-200"}`;
+                pill.innerText = step;
+                container.appendChild(pill);
+            });
+        }
+
+        function startLoading(mode) {
+            const loading = document.getElementById("loading");
+            const title = document.getElementById("loadingTitle");
+            const text = document.getElementById("loadingText");
+            const steps = getLoadingSteps(mode);
+
+            loading.classList.remove("hidden");
+            title.innerText = mode === "full" ? "Running FULL mode analysis..." : "Running FAST mode analysis...";
+            loadingStepIndex = 0;
+            text.innerText = steps[0];
+            renderLoadingStepPills(steps, loadingStepIndex);
+
+            if (loadingTimer) {
+                clearInterval(loadingTimer);
+            }
+
+            loadingTimer = setInterval(() => {
+                if (loadingStepIndex >= steps.length - 1) {
+                    clearInterval(loadingTimer);
+                    loadingTimer = null;
+                    return;
+                }
+
+                loadingStepIndex += 1;
+                text.innerText = steps[loadingStepIndex];
+                renderLoadingStepPills(steps, loadingStepIndex);
+            }, mode === "full" ? 1050 : 900);
+        }
+
+        function stopLoading() {
+            if (loadingTimer) {
+                clearInterval(loadingTimer);
+                loadingTimer = null;
+            }
+            document.getElementById("loading").classList.add("hidden");
+        }
+
+        function detectEngineFit(data) {
+            const propertyType = data.property_specs?.inferredType || data.source_status?.property_context?.inferred_type;
+            const units = data.property_specs?.unitCount || data.source_status?.property_context?.unit_count || 1;
+            const compCount = data.neighborhood_comps?.comp_count ?? 0;
+            const rentSource = data.source_status?.rent_source;
+            const quality = data.computed_financials?.data_quality_flag;
+
+            if (quality !== "ok" || rentSource === "none") {
+                return [
+                    "Weak Fit",
+                    "The engine is missing key income inputs, so this property needs manual underwriting before the numbers are trustworthy."
+                ];
+            }
+
+            if ((propertyType === "single_family" || propertyType === "multi_family") && units <= 4 && compCount >= 3) {
+                return [
+                    "Strong Fit",
+                    "This engine is strongest on long-term residential rentals with usable rent evidence and enough nearby comps, especially single-family homes and small 2-4 unit properties."
+                ];
+            }
+
+            if (units <= 4) {
+                return [
+                    "Average Fit",
+                    "The engine can still screen this deal, but weaker rent evidence or thin comps make the output more directional than definitive."
+                ];
+            }
+
+            return [
+                "Weak Fit",
+                "This engine is not optimized for larger multifamily, mixed-use, short-term rental, or highly specialized assets."
+            ];
+        }
 
         function toggleExplain(id) {
             document.getElementById(id).classList.toggle("hidden");
@@ -461,7 +638,8 @@
                 ["Zillow Scrape", prettyText(sourceStatus.zillow_scrape?.status), sourceStatus.zillow_scrape?.detail || "No extra detail"],
                 ["GPT Enhancement", prettyText(sourceStatus.gpt_enhancement?.status), sourceStatus.gpt_enhancement?.detail || "No extra detail"],
                 ["Persistence", prettyText(sourceStatus.persistence?.status), sourceStatus.persistence?.detail || "No extra detail"],
-                ["Rent Source Used", prettyText(sourceStatus.rent_source), "This is the rent input the model actually used"]
+                ["Rent Source Used", prettyText(sourceStatus.rent_source), "This is the rent input the model actually used"],
+                ["Property Context", `${prettyText(sourceStatus.property_context?.inferred_type)} | ${formatNumber(sourceStatus.property_context?.unit_count)} unit(s)`, (sourceStatus.property_context?.evidence || []).join(", ") || "No extra context detected"]
             ];
 
             items.forEach(([title, status, detail]) => {
@@ -514,18 +692,112 @@
             });
         }
 
+        function renderAdjustmentCards(items) {
+            if (!items || items.length === 0) {
+                return `<div class="text-slate-500 italic">No material adjustment made.</div>`;
+            }
+
+            return items.map(item => `
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="font-bold text-slate-900">${prettyText(item.assumption_name)}</div>
+                        <div class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 border border-slate-300">
+                            Confidence ${formatNumber(item.confidence)}/100
+                        </div>
+                    </div>
+                    <div class="mt-2 text-sm text-slate-700">
+                        <span class="font-semibold">Before:</span> ${item.assumption_name === "confidence_score"
+                    ? (item.before_value == null ? "N/A" : `${formatNumber(item.before_value)}/100`)
+                    : (item.before_value == null ? "N/A" : formatCurrencyPrecise(item.before_value))}
+                        <span class="mx-2 text-slate-400">→</span>
+                        <span class="font-semibold">After:</span> ${item.assumption_name === "confidence_score"
+                    ? (item.after_value == null ? "N/A" : `${formatNumber(item.after_value)}/100`)
+                    : (typeof item.after_value === "number" ? formatCurrencyPrecise(item.after_value) : item.after_value)}
+                    </div>
+                    <div class="mt-2 text-sm text-slate-600"><span class="font-semibold text-slate-800">Reason:</span> ${item.adjustment_reason}</div>
+                    <div class="mt-2 text-sm text-slate-600"><span class="font-semibold text-slate-800">Evidence:</span> ${item.evidence}</div>
+                </div>
+            `).join("");
+        }
+
+        function renderDiffCards(diff) {
+            if (!diff) {
+                return `<div class="text-slate-500 italic">No full-mode diff available.</div>`;
+            }
+
+            const cards = [];
+            const financialChanges = diff.financial_changes || {};
+            const underwriteChanges = diff.underwrite_changes || {};
+
+            if (Object.keys(financialChanges).length === 0 && Object.keys(underwriteChanges).length === 0) {
+                cards.push(`<div class="rounded-xl border border-slate-200 bg-slate-50 p-4 text-slate-600">No material adjustment made.</div>`);
+            }
+
+            Object.entries(financialChanges).forEach(([key, change]) => {
+                cards.push(`
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div class="font-bold text-slate-900">${prettyText(key)}</div>
+                        <div class="mt-2 text-sm text-slate-600">Before: ${change.before}</div>
+                        <div class="text-sm text-slate-600">After: ${change.after}</div>
+                    </div>
+                `);
+            });
+
+            Object.entries(underwriteChanges).forEach(([key, change]) => {
+                cards.push(`
+                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div class="font-bold text-slate-900">${prettyText(key)}</div>
+                        <div class="mt-2 text-sm text-slate-600">Before: ${change.before}</div>
+                        <div class="text-sm text-slate-600">After: ${change.after}</div>
+                    </div>
+                `);
+            });
+
+            return cards.join("");
+        }
+
+        function renderFullModeSection(data) {
+            const section = document.getElementById("fullModeSection");
+            const mode = data.source_status?.mode;
+            if (mode !== "full") {
+                section.classList.add("hidden");
+                return;
+            }
+
+            section.classList.remove("hidden");
+            document.getElementById("resFullModeSummary").innerText =
+                data.full_mode_diff?.summary || data.ai_adjusted_assumptions?.message || "No material adjustment made.";
+
+            const compsRecommendation = data.full_mode_diff?.comps_fallback_recommendation;
+            document.getElementById("resFullModeComps").innerText = compsRecommendation?.recommended
+                ? `Comps fallback recommendation: ${prettyText(compsRecommendation.strategy)}. ${compsRecommendation.reason || ""}`
+                : `Comps fallback recommendation: none. ${compsRecommendation?.reason || ""}`;
+
+            document.getElementById("resAdjustedRent").innerText = formatCurrency(data.ai_adjusted_financials?.monthly_rent_est);
+            document.getElementById("resAdjustedCapRate").innerText = formatPercent(data.ai_adjusted_financials?.cap_rate);
+            document.getElementById("resAdjustedDscr").innerText = formatNumber(data.ai_adjusted_financials?.dscr);
+            document.getElementById("resAdjustedCashFlow").innerText = formatCurrency(data.ai_adjusted_financials?.annual_cash_flow_after_debt);
+
+            document.getElementById("resAdjustedAssumptions").innerHTML =
+                renderAdjustmentCards(data.ai_adjusted_assumptions?.items || []);
+
+            document.getElementById("resFullModeDiff").innerHTML =
+                renderDiffCards(data.full_mode_diff);
+        }
+
         async function analyzeDeal() {
             hideError();
             document.getElementById("results").classList.add("hidden");
-            document.getElementById("loading").classList.remove("hidden");
 
             const url = document.getElementById("zillowUrl").value.trim();
             const address = document.getElementById("propertyAddress").value.trim();
             const mode = document.getElementById("analysisMode").value;
             const apiKey = document.getElementById("apiKey").value.trim();
 
+            startLoading(mode);
+
             if (!url) {
-                document.getElementById("loading").classList.add("hidden");
+                stopLoading();
                 showError("A Zillow URL is required.");
                 return;
             }
@@ -618,6 +890,10 @@
                 document.getElementById("resDataQuality").innerText =
                     prettyText(data.computed_financials?.data_quality_flag);
 
+                const [engineFit, engineFitDetail] = detectEngineFit(data);
+                document.getElementById("resEngineFit").innerText = engineFit;
+                document.getElementById("resEngineFitDetail").innerText = engineFitDetail;
+
                 document.getElementById("resValuationRange").innerText =
                     `${formatCurrency(data.valuation_model?.valuation_low)} to ${formatCurrency(data.valuation_model?.valuation_high)}`;
 
@@ -643,14 +919,15 @@
                 );
 
                 renderSourceStatus(data.source_status || {});
+                renderFullModeSection(data);
 
-                document.getElementById("loading").classList.add("hidden");
+                stopLoading();
                 document.getElementById("results").classList.remove("hidden");
                 window.scrollTo({ top: document.getElementById("results").offsetTop - 20, behavior: "smooth" });
 
             } catch (error) {
                 console.error(error);
-                document.getElementById("loading").classList.add("hidden");
+                stopLoading();
                 showError(error.message || "Failed to connect to the analysis API.");
             }
         }

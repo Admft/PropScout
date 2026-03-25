@@ -1,133 +1,265 @@
-# PropScout Pro: Full-Stack Breakdown
+# 🚀 PropScout Pro — Full Stack Architecture 
 
-## What This Product Is
-PropScout Pro is a real-estate deal intelligence stack built for fast property analysis from a Zillow URL. It combines deterministic underwriting math with AI narrative enhancement, while staying robust when outside services fail.
+## 🧠 Product Overview
+PropScout Pro is a **serverless, AI-enhanced real estate underwriting platform** that transforms Zillow listings into **instant investment-grade deal analysis**.
 
-## Full Stack at a Glance
+It combines:
+- **Deterministic financial modeling (source of truth)**
+- **Multi-source data ingestion**
+- **LLM-powered narrative enhancement**
+- **Cloud-native, event-driven architecture**
 
-### Frontend
-- **Static Web UI**: `index.html`
-- **Styling**: Tailwind CSS via CDN
-- **Runtime**: Browser (works for Chrome extension style workflows)
-- **Responsibility**:
-  - Capture Zillow URL + optional address
-  - Call backend endpoint
-  - Render financial metrics, risk flags, and verdict
+---
 
-### Backend API
-- **Platform**: Azure Functions (Python HTTP trigger)
-- **Endpoint**: `POST /api/AnalyzeProperty`
-- **Core file**: `function_app.py`
-- **Responsibility**:
-  - Validate request + Zillow URL
-  - Gather valuation/comps/listing data
-  - Compute valuation + financial metrics
-  - Run deterministic underwriting
-  - Optionally enhance narrative with GPT
-  - Return final JSON report
+# 🏗️ Core Architecture
 
-### Data + AI Integrations
-- **RentCast API**
-  - AVM valuation (`/v1/avm/value`)
-  - Sales comps (`/v1/sales/comps`)
-- **Apify Zillow scraper actor**
-  - Pulls property details + description + rent clues
-- **OpenAI API**
-  - Enhances executive summary and risk wording
-  - Guardrailed by deterministic outcome
+## 🌐 Frontend Layer
+- **Static Web UI** (HTML + Tailwind CSS via CDN)
+- **Chrome Extension (Planned Primary Interface)**
+- Runs in **browser runtime (client-side)**
+- Lightweight, no framework dependency (zero build step)
 
-### Persistence
-- **Azure Cosmos DB**
-- Stores full report payload for retrieval/audit
-- Fast mode can skip persistence for low latency
+### Responsibilities
+- Capture Zillow URL
+- Trigger backend API request
+- Render:
+  - Deal verdict (PASS / REJECT / MANUAL_REVIEW)
+  - Financial metrics (NOI, Cap Rate, DSCR)
+  - Risk signals + valuation insights
+  - Source observability diagnostics
 
-## Core Analysis Pipeline
-1. **Input + Security**
-   - Optional `X-API-Key` enforcement
-   - Strict Zillow `https` URL validation
-2. **Data Collection**
-   - RentCast valuation
-   - RentCast comps
-   - Zillow scrape (Apify)
-3. **Rent Selection (priority order)**
-   1. RentCast midpoint
-   2. Zillow rent Zestimate
-   3. Zillow history fallback extraction
-   4. None (manual-review path)
-4. **Valuation Modeling**
-   - Multi-signal weighted blend (list, zestimate, AVM, comps, ppsf, optional income approach)
-   - Outlier down-weighting
-   - Confidence scoring + valuation range
-5. **Financial Engine**
-   - NOI, cap rate, DSCR, debt service, cash flow, breakeven occupancy
-   - Missing inputs return `None` (not fake zeros)
-6. **Deterministic Underwriting (source of truth)**
-   - Outputs `PASS`, `REJECT`, or `MANUAL_REVIEW`
-   - Missing-rent cases route to `MANUAL_REVIEW`, not fake distress
-7. **GPT Enhancement (optional)**
-   - Improves narrative only
-   - Cannot override deterministic `REJECT` or `MANUAL_REVIEW`
-8. **Report + Optional Save**
-   - Returns JSON with metrics, valuation model, underwriting, and source health
+---
 
-## What’s Special / Technically Strong
+## ⚙️ Backend Layer (Serverless Compute)
 
-### 1) Deterministic-First + AI-Enhanced
-Most stacks let LLMs decide the deal. This one does the opposite:
-- Math/rules produce the canonical verdict
-- GPT improves communication, not truth
-- Hard guardrails prevent AI drift
+### Platform
+- **Microsoft Azure**
+- **Azure Functions (Python HTTP Trigger)**
+- **Stateless, event-driven compute**
 
-### 2) Data-Quality-Aware Underwriting
-Missing rent is treated as **unknown**, not **zero performance**:
-- Prevents false `0 NOI / 0 DSCR` cascades
-- Triggers `MANUAL_REVIEW` with explicit warning
+### Endpoint
+```
+POST /api/AnalyzeProperty
+```
 
-### 3) Transparent Source Observability
-`source_status` explains:
-- What succeeded, failed, or was skipped
-- Which rent source won
-- Whether GPT and persistence ran
-This is huge for extension UX and debugging trust.
+### Core Characteristics
+- Serverless execution model
+- Horizontal auto-scaling
+- Consumption-based billing
+- Low operational overhead
 
-### 4) Extension-Friendly Fast Mode
-`mode=fast` supports low-latency use:
-- Skip GPT
-- Optionally skip Cosmos write
-- Return deterministic underwriting quickly
+### Responsibilities
+- Request validation + security enforcement
+- External API orchestration
+- Financial + valuation computation
+- Deterministic underwriting decision engine
+- Optional LLM enrichment
+- Structured JSON response generation
 
-### 5) Resilient External Calls
-- Shared `requests.Session`
-- Retry/backoff on transient network/status failures
-- Graceful degradation keeps endpoint usable
+---
 
-## JSON Contract Highlights
-The report intentionally includes:
-- `computed_financials`
-- `valuation_model`
-- `algorithmic_underwrite`
-- `ai_underwriter`
-- `source_status`
+## 🔗 Data Integration Layer (External APIs)
 
-Semantics:
-- `null` => unavailable / not computable
-- `0` => real computed zero
+### 🏠 RentCast API
+- Automated Valuation Model (AVM)
+- Rental estimates
+- Comparable sales data
 
-## Key Config Knobs (Env + constants)
-- API keys: OpenAI / RentCast / Apify / Cosmos
-- Optional auth key: `PROPSCOUT_API_KEY`
-- Financial assumptions (vacancy, tax, insurance, maintenance, etc.)
-- Comp radius/limit
-- Fast mode behavior flags
+### 🕸️ Apify (Zillow Scraper Actor)
+- Property metadata extraction
+- Listing descriptions
+- Rent clues / historical signals
 
-## Why This Is Good for Product Growth
-- Easy to demo now (single HTTP function)
-- Explainable output for users and investors
-- Structured source status for better support/debugging
-- Deterministic core makes later model upgrades safer
-- Clean foundation for eventual async scaling when volume grows
+### 🤖 OpenAI API (GPT-4o)
+- Natural language synthesis
+- Executive summaries
+- Risk interpretation
 
-## Future Evolution (when ready)
-- Move long-running scrape/LLM work to async jobs
-- Add richer telemetry dashboards + latency/error SLOs
-- Introduce report schema versioning + integration test suite
+> ⚠️ Guardrail: LLM is **non-authoritative** — cannot override deterministic underwriting.
+
+---
+
+## 🧮 Core Intelligence Layer
+
+### 📊 Valuation Engine
+- Multi-signal weighted model:
+  - Listing price
+  - Zestimate
+  - RentCast AVM
+  - Comparable sales
+  - Price-per-square-foot
+  - Income approach (optional)
+- Outlier detection + down-weighting
+- Confidence scoring + valuation range output
+
+---
+
+### 💰 Financial Modeling Engine
+- NOI (Net Operating Income)
+- Cap Rate
+- DSCR (Debt Service Coverage Ratio)
+- Cash Flow
+- Debt Service
+- Break-even occupancy
+
+> Missing inputs → `null` (never synthetic defaults)
+
+---
+
+### ⚖️ Deterministic Underwriting Engine (Core Decision Layer)
+
+Outputs:
+- `PASS`
+- `REJECT`
+- `MANUAL_REVIEW`
+
+Features:
+- Rule-based decision system
+- Data-quality-aware branching
+- No AI hallucination risk
+- Fully explainable logic
+
+---
+
+### 🧠 Rent Selection Engine (Priority-Based Resolution)
+1. RentCast estimate (primary)
+2. Zillow Rent Zestimate
+3. Scraped rent signals (Apify)
+4. Fallback → **MANUAL_REVIEW**
+
+---
+
+### ✨ AI Enhancement Layer (Optional)
+- GPT-generated summaries
+- Risk narrative generation
+- Explanation augmentation
+
+> Strict constraint: **Cannot override deterministic decision**
+
+---
+
+## 💾 Persistence Layer
+
+### Database
+- **Azure Cosmos DB (NoSQL, Serverless Mode)**
+
+### Characteristics
+- Globally distributed
+- Low-latency reads/writes
+- JSON-native storage
+- Partitioned container architecture
+
+### Usage
+- Store full analysis reports
+- Enable auditability + retrieval
+- Optional in **fast mode** for latency optimization
+
+---
+
+## 📡 Observability & Monitoring
+
+### Platform
+- **Azure Application Insights**
+
+### Telemetry
+- Request latency
+- Failure rates
+- Dependency tracking (RentCast, Apify, OpenAI)
+- Custom business metrics:
+  - Deal outcomes (PASS / REJECT / MANUAL_REVIEW)
+  - Rent source selection
+  - Data quality flags
+
+---
+
+## 🔐 Security Layer
+- API key enforcement (`X-API-Key`)
+- Environment-based secret management
+- Planned:
+  - Rate limiting
+  - Usage quotas
+  - Abuse detection
+
+---
+
+# 🔁 End-to-End Data Flow
+
+```
+[ Browser / Chrome Extension ]
+              ↓
+   Azure Function (HTTP Trigger)
+              ↓
+   ┌───────────────┬───────────────┬───────────────┐
+   │ RentCast API  │ Apify Scraper │ OpenAI GPT    │
+   └───────────────┴───────────────┴───────────────┘
+              ↓
+   Deterministic Financial Engine
+              ↓
+   Underwriting Decision Engine
+              ↓
+   Optional GPT Enhancement
+              ↓
+   JSON Response Payload
+              ↓
+   Cosmos DB (optional persistence)
+```
+
+---
+
+# ⚡ Execution Modes
+
+## 🚀 Fast Mode
+- Deterministic analysis only
+- No GPT
+- Optional no persistence
+- Low latency (~sub-second to few seconds)
+
+## 🧠 Full Mode
+- Includes GPT narrative
+- Full report persistence
+- Rich explanation layer
+
+---
+
+# 📦 API Response Schema (Simplified)
+
+```json
+{
+  "computed_financials": {},
+  "valuation_model": {},
+  "algorithmic_underwrite": {},
+  "ai_underwriter": {},
+  "source_status": {}
+}
+```
+
+### Semantics
+- `null` → unavailable / not computable
+- `0` → valid computed value
+
+---
+
+# 🧩 Key Architectural Patterns
+
+- **Serverless Architecture**
+- **Stateless Compute**
+- **Event-Driven Execution**
+- **Micro-Integration Pattern (API orchestration)**
+- **Deterministic + AI Hybrid Model**
+- **Graceful Degradation Design**
+- **Observability-First System Design**
+
+---
+
+# 🧭 Deployment Stack
+
+- Azure Function App (Python runtime)
+- Azure Cosmos DB (Serverless NoSQL)
+- Azure Application Insights (monitoring)
+- Environment-based configuration (App Settings)
+
+---
+
+# 🧾 One-Line Definition
+
+> PropScout Pro is a **serverless, cloud-native underwriting engine and Chrome extension** that converts Zillow listings into **instant, explainable real estate investment decisions** using **deterministic financial modeling and constrained AI augmentation**.
