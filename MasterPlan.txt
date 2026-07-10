@@ -1,0 +1,121 @@
+HouseFax — Master Plan
+Positioning: An AI-generated due-diligence report for any residential property. "Carfax for houses." Not a listing marketplace, not a Zillow competitor — a trustworthy, cited, tool-grounded analysis layer that sits on top of legally available property data.
+Core principle: LLM explains. Tools calculate. Database grounds. Evals police.
+
+1. Technology → Feature mapping
+Every technology below exists because a specific feature needs it. Nothing is on this list for résumé decoration.
+Frontend
+Technology
+Feature it powers
+Next.js
+The whole user-facing app: address search page, report viewer, PDF export trigger, follow-up Q&A panel
+TypeScript
+Type-safe contracts between frontend and the FastAPI report schema, so a change in the report shape breaks the build, not production
+
+Backend
+Technology
+Feature it powers
+FastAPI
+Single backend service. Hosts the /analyze endpoint (address in, report out), tool-calling orchestration, and the eval-runner endpoint
+Redis
+Caches RentCast/ATTOM/Census/FEMA responses (these are rate-limited and cost money per call) and caches fully generated reports so re-running the same address is instant
+Docker + Docker Compose
+Local dev parity: Postgres, Redis, and the API all spin up identically on your machine and in production
+AWS (RDS + S3 + EC2/ECS)
+RDS hosts Postgres. S3 stores generated PDF reports and uploaded documents (inspection reports, disclosures). EC2/ECS runs the FastAPI container
+GitHub Actions
+CI/CD: run the eval suite and unit tests on every push, block merges that regress report quality
+
+Data
+Technology
+Feature it powers
+Postgres + PostGIS
+One database for everything: property records, comps, geospatial queries ("find comps within 1 mile"), and — via pgvector — the RAG index. No separate vector DB to sync
+pgvector
+Embeddings for market reports, uploaded documents, and comp descriptions, queried alongside relational data in the same SQL query
+RentCast / ATTOM API
+Property facts, rent estimates, value estimates, comps, sale history — the backbone of every report
+Census / FRED / FEMA APIs
+Neighborhood income/population trends, mortgage rate assumptions, flood/hazard risk scoring
+
+AI
+Technology
+Feature it powers
+RAG (retrieval-augmented generation)
+Grounds the report's neighborhood and market narrative in retrieved data instead of the model's memory — same principle you proved out in your RAG ablation study
+Tool-calling / agentic orchestration
+The core architecture. The LLM never computes a mortgage payment or cap rate itself — it calls calculate_monthly_payment(), calculate_cap_rate(), etc. and narrates the result
+Hosted LLM API (Claude/GPT)
+Report generation, comp explanation, risk narrative, follow-up Q&A. Hosted for reliability — a $500k decision report is the wrong place to save cost with a self-hosted quantized model
+Eval harness
+Your actual differentiator. Catches wrong math, unsupported claims, bad comps, fair-housing language, and overconfident verdicts before a report ships
+LlamaIndex (document intelligence module)
+A separate, honest use case: multi-document RAG over uploaded inspection reports, disclosures, and HOA docs, using sub-question query engines to answer cross-document questions with page citations. Not used for the core structured-data pipeline — that stays hand-rolled tool-calling for determinism
+
+
+2. System architecture
+Three layers, one deployment:
+Frontend (Next.js) — the address input, report viewer, and Q&A UI
+Backend (FastAPI + Redis) — orchestrates tool calls, caches expensive API responses, serves the report
+Data & AI (Postgres + PostGIS + pgvector, hosted LLM) — stores property data and vectors, grounds the LLM's reasoning
+(See the architecture diagram above for the visual layout.)
+
+3. End-to-end workflow
+Address input — user submits a property address, optionally with purchase price, down payment, and buyer-vs-investor intent
+Data fetch — backend calls RentCast/ATTOM for property facts, rent/value estimates, and comps; calls Census/FRED/FEMA for market and risk context. Redis caches all of it
+AI orchestration — the LLM plans which tools to call (calculate_monthly_payment, calculate_cash_flow, calculate_cap_rate, find_comps, get_risk_profile), calls them, and drafts the report narrative around the returned numbers — never inventing a figure itself
+Eval harness — before the report is returned, it's checked: math correctness, citation presence, comp quality, fair-housing language, overconfidence ("guarantees appreciation" is a hard fail)
+Report output — a structured, cited report renders in the UI and exports to PDF
+(See the workflow diagram above for the visual sequence.)
+
+4. Report structure
+Executive verdict — Cautious Buy / Strong Candidate / Pass, with best-fit and worst-fit buyer profiles
+Property facts — beds/baths, sqft, year built, tax history, last sale
+Payment model — price, down payment, rate assumption, taxes, insurance, all-in monthly payment
+Investment model — rent estimate, vacancy, NOI, cap rate, cash flow, cash-on-cash return
+Comps — nearest and most similar sales, price per sqft, over/underpriced signal
+Neighborhood thesis — income/population trends, price/rent trends, objective criteria only, no steering language
+Risk flags — flood, wildfire, insurance, tax trajectory, age-related maintenance risk
+Questions to ask — a generated list for the buyer to bring to their agent
+Document findings (if docs uploaded) — cross-referenced red flags from inspection reports, disclosures, HOA docs, via the LlamaIndex module
+
+5. Eval harness detail
+Eval category
+What it catches
+Math correctness
+Wrong mortgage, cap-rate, or cash-flow calculations
+Unsupported claims
+Model states a fact not present in retrieved data
+Comp quality
+Comps that are too far, wrong property type, or wrong size band
+Fair-housing risk
+Steering language or demographic-coded phrasing
+Overconfidence
+Guarantees of appreciation or investment return
+Source usage
+Report fails to cite the data it's summarizing
+Tool discipline
+LLM calculates a number directly instead of calling the tool
+Estimate confidence
+Model fails to hedge when the underlying AVM confidence is low
+
+
+6. Roadmap tiers
+Essential (build now)
+Docker, FastAPI, AWS (RDS + S3 + EC2/ECS), Redis, GitHub Actions, Postgres + PostGIS + pgvector, RentCast/ATTOM, Census/FRED/FEMA, RAG, tool-calling orchestration, hosted LLM API, eval harness, Next.js + TypeScript.
+Down the line (real, but only once usage justifies it)
+Terraform (multiple environments), Kubernetes/Helm (multiple independently-scaling services), microservices split (monolith becomes a genuine bottleneck), Kafka (multiple consumers of the same event), fine-tuning/LoRA (large real-usage corpus), standalone vector DB like Qdrant/Pinecone (pgvector hits real limits), data warehouse (Postgres analytics genuinely slows), multi-agent orchestration (distinct buyer/investor/realtor workflows).
+Never (wrong tool at this product's scale)
+gRPC, real-time streaming (Flink), framework-driven RAG for the core structured pipeline (hand-rolled tool-calling stays more transparent), self-hosted/quantized inference in production, training a custom model from scratch.
+
+7. 30-day build plan
+Week 1 — Data + backend: FastAPI skeleton, Postgres/PostGIS schema, RentCast or ATTOM integration, mortgage/cash-flow/cap-rate calculators, Docker Compose.
+Week 2 — AI report generation: LLM orchestration loop, tool calling, structured JSON report output, citations, confidence levels.
+Week 3 — Frontend: landing page, address input, report page, comp table, PDF export, follow-up Q&A.
+Week 4 — Evals + polish: 30–50 test case eval dataset, math validation tests, hallucination and fair-housing checks, README, architecture diagram, demo video.
+
+8. README positioning
+HouseFax is an AI property-analysis platform for residential buyers and investors. It combines structured property data, geospatial search, deterministic underwriting calculators, RAG over supporting documents, and LLM-based report generation to produce cited, auditable property intelligence reports. The system is built around the principle that LLMs should explain and reason, while deterministic tools perform financial calculations and data retrieval.
+Avoid: "Zillow killer," "replaces realtors," "predicts appreciation," "guarantees ROI," "nationwide MLS-powered platform."
+Use: "decision-support tool," "underwriting copilot," "source-grounded report generator," "not financial, legal, or real-estate advice."
+
