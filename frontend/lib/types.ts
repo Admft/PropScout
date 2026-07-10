@@ -97,6 +97,7 @@ export interface ExecutiveVerdict {
 export interface Report {
   report_id: string;
   generated_at: string;
+  intent: "buyer" | "investor";
   disclaimer: string;
   executive_verdict: ExecutiveVerdict;
   property_facts: PropertyFacts;

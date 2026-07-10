@@ -1,0 +1,254 @@
+================================================================================
+  HOUSEFAX — BUILD STATUS & ROADMAP
+  Generated: July 2026
+  Positioning: AI due-diligence report for any residential property.
+               "Carfax for houses." Decision-support tool — not a marketplace,
+               not financial/legal/real-estate advice.
+  Core principle: LLM explains. Tools calculate. Database grounds. Evals police.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. WHAT IS FULLY BUILT (WORKING END-TO-END MVP)
+--------------------------------------------------------------------------------
+
+You can run the full product locally today with:
+  docker compose up --build
+  → Web UI:  http://localhost:3000
+  → API docs: http://localhost:8000/docs
+
+--- FRONTEND (Next.js + TypeScript) ---
+  [BUILT] Address search page (address, optional price, down %, buyer/investor intent)
+  [BUILT] Report viewer — verdict, property facts, payment model, investment model,
+          comps, neighborhood thesis, risk flags, questions to ask, source citations
+  [BUILT] Follow-up Q&A panel grounded in the generated report
+  [BUILT] TypeScript types aligned with the FastAPI report schema
+  [BUILT] Dockerized frontend (Next.js standalone)
+
+--- BACKEND (FastAPI) ---
+  [BUILT] POST /analyze     — address in → full cited report out
+  [BUILT] GET  /reports/{id} — reload a cached/persisted report
+  [BUILT] POST /qa          — follow-up questions against a report
+  [BUILT] POST /evals/run   — run the eval suite on demand
+  [BUILT] GET  /health
+  [BUILT] Redis cache for provider responses + full reports (memory fallback if Redis down)
+  [BUILT] Postgres report persistence (graceful no-op if DATABASE_URL unset)
+  [BUILT] CORS for localhost:3000 / 127.0.0.1:3000
+
+--- DATA PIPELINE (deterministic, cached) ---
+  [BUILT] RentCast — property facts, AVM value, rent estimate, comps
+  [BUILT] Census ACS — tract income / population (via FCC block lookup)
+  [BUILT] FRED — live 30-year mortgage rate (falls back to default if no key)
+  [BUILT] FEMA NFHL — flood zone lookup (no API key required)
+
+--- DETERMINISTIC TOOLS (LLM never invents these numbers) ---
+  [BUILT] calculate_monthly_payment
+  [BUILT] calculate_noi / cap_rate / cash_flow / cash_on_cash
+  [BUILT] Comp selection (distance, sqft band, property type, age filters)
+  [BUILT] Risk flags (flood zone, age/maintenance, high tax rate)
+  [BUILT] Tool registry + dispatcher for the LLM tool-calling loop
+
+--- AI ORCHESTRATION ---
+  [BUILT] Grounding stage — fetch all provider data + run calculators before LLM
+  [BUILT] Tool-calling loop (max 8 turns) — LLM calls tools, then submits narrative
+  [BUILT] Hosted LLM support — Anthropic Claude and/or OpenAI GPT (auto-detected)
+  [BUILT] System prompts with citation rules + fair-housing constraints
+  [BUILT] Structured JSON report output with inline source citations
+  [BUILT] Q&A path reuses report grounding + calculator tools
+
+--- EVAL HARNESS (pre-ship gate + CI) ---
+  [BUILT] math_correctness   — recomputes mortgage / cap rate / cash flow
+  [BUILT] source_usage       — narrative must cite real source ids
+  [BUILT] tool_discipline    — numbers must come from tools/grounding, not invention
+  [BUILT] comp_quality       — distance, size band, staleness checks
+  [BUILT] fair_housing       — steering / demographic-coded language
+  [BUILT] overconfidence      — guarantees of appreciation / returns
+  [BUILT] Wired into /analyze (runs before report returns) and GitHub Actions CI
+
+--- INFRA ---
+  [BUILT] Docker Compose — Postgres (PostGIS + pgvector image), Redis, API, Web
+  [BUILT] GitHub Actions CI — pytest + eval suite + frontend typecheck/build
+  [BUILT] .env.example + .gitignore for secrets
+  [BUILT] Unit tests for calculators, analyze flow, eval checks
+
+--- DATABASE SCHEMA (present; partially wired) ---
+  [BUILT] PostGIS + pgvector extensions in init.sql
+  [BUILT] Tables defined: properties, comps, reports, doc_chunks
+  [BUILT] App currently persists/loads: reports only
+  [NOTE]  properties / comps / doc_chunks tables exist but are not written by app code yet
+
+--- LEGACY (NOT part of current runtime) ---
+  Azure Functions PropScout prototype (RentCast + Apify Zillow + OpenAI + Cosmos)
+  Kept under legacy/ for reference only
+
+
+--------------------------------------------------------------------------------
+2. APIs CURRENTLY IN USE
+--------------------------------------------------------------------------------
+
+DATA PROVIDERS
+  RentCast API          https://api.rentcast.io
+                        — /v1/properties, /v1/avm/value, /v1/avm/rent/long-term
+                        — REQUIRED key: RENTCAST_API_KEY
+
+  US Census ACS5        https://api.census.gov
+                        — tract income / population
+                        — OPTIONAL key: CENSUS_API_KEY (works keyless at low volume)
+
+  FCC Census Block      https://geo.fcc.gov
+                        — lat/lon → census tract lookup (no key)
+
+  FRED                  https://api.stlouisfed.org
+                        — MORTGAGE30US (30yr mortgage rate)
+                        — OPTIONAL key: FRED_API_KEY
+
+  FEMA NFHL             https://hazards.fema.gov (ArcGIS)
+                        — flood zone by point query (no key)
+
+LLM PROVIDERS (set at least one)
+  Anthropic             Messages API — ANTHROPIC_API_KEY
+  OpenAI                Chat Completions — OPENAI_API_KEY
+
+INFRA (local / compose)
+  Redis                 cache for provider responses + reports
+  Postgres              report persistence (PostGIS + pgvector ready)
+
+NOT USED BY CURRENT HOUSEFAX APP (legacy only)
+  Apify (Zillow scraper)
+  Azure Cosmos DB
+  ATTOM (mentioned in master plan as alternative to RentCast — not integrated yet)
+
+
+--------------------------------------------------------------------------------
+3. WHAT IS PARTIAL / INCOMPLETE
+--------------------------------------------------------------------------------
+
+  [PARTIAL] PDF export
+            — UI has a print button (window.print + print CSS)
+            — Not a real generated PDF file, no S3 storage
+
+  [PARTIAL] Eval fixture dataset
+            — 6 check types are live
+            — Only ~9 fixture cases today; master plan targets 30–50
+
+  [PARTIAL] Postgres usage
+            — Schema has PostGIS + pgvector + properties/comps/doc_chunks
+            — App only reads/writes the reports table
+            — Geospatial comp queries and RAG embeddings not wired yet
+
+  [PARTIAL] Risk flags
+            — Flood, age/maintenance, tax trajectory: yes
+            — Wildfire / insurance market risk: not implemented
+
+  [PARTIAL] Frontend surface
+            — Single-page app works end-to-end
+            — No report history, auth, settings, or multi-page routing
+
+
+--------------------------------------------------------------------------------
+4. WHAT'S NEXT (MAPPED TO MASTER PLAN)
+--------------------------------------------------------------------------------
+
+PRIORITY A — Finish the "Essential" tier gaps (build next)
+  1. Expand eval dataset to 30–50 cases (math, hallucination, fair-housing, comps)
+  2. Wire PostGIS for real geospatial comps ("within 1 mile") instead of
+     client-side distance filtering only
+  3. Real PDF generation (server-side) + optional S3 storage
+  4. Persist properties + comps into Postgres (not just reports)
+  5. ATTOM as optional/fallback data provider alongside RentCast (if needed)
+  6. Deploy to AWS: RDS (Postgres) + ECS/EC2 (API) + S3 (PDFs/docs)
+  7. Demo polish: README positioning, architecture diagram, short demo video
+
+PRIORITY B — Document intelligence module (distinct from core pipeline)
+  8. LlamaIndex multi-document RAG over uploaded inspection reports,
+     disclosures, HOA docs — with page citations
+  9. Use pgvector doc_chunks table for embeddings
+  10. Surface "Document findings" section in the report when docs are uploaded
+  NOTE: Keep core structured-data pipeline as hand-rolled tool-calling
+        (do NOT replace it with framework-driven RAG)
+
+PRIORITY C — Product hardening
+  11. Auth / user accounts (if multi-user)
+  12. Rate limiting + API key management for production
+  13. Report history / saved reports UI
+  14. Stronger risk coverage (wildfire, insurance cost signals)
+  15. Streaming report generation (optional UX improvement)
+
+DOWN THE LINE (only once usage justifies it)
+  — Terraform (multi-env)
+  — Kubernetes / Helm
+  — Microservices split
+  — Kafka
+  — Fine-tuning / LoRA
+  — Standalone vector DB (Qdrant/Pinecone) if pgvector hits limits
+  — Data warehouse if Postgres analytics slows
+  — Multi-agent workflows (buyer / investor / realtor)
+
+NEVER (wrong tool at this product's scale)
+  — gRPC, Flink streaming
+  — Framework-driven RAG for the core structured pipeline
+  — Self-hosted / quantized inference in production for $500k-decision reports
+  — Training a custom model from scratch
+
+
+--------------------------------------------------------------------------------
+5. REPORT STRUCTURE — STATUS VS MASTER PLAN
+--------------------------------------------------------------------------------
+
+  Executive verdict (+ best/worst-fit buyer profiles)     [BUILT]
+  Property facts                                          [BUILT]
+  Payment model                                           [BUILT]
+  Investment model (NOI, cap rate, cash flow, CoC)        [BUILT]
+  Comps + $/sqft signal                                   [BUILT]
+  Neighborhood thesis (objective, no steering)            [BUILT]
+  Risk flags                                              [PARTIAL — flood/age/tax]
+  Questions to ask                                        [BUILT]
+  Document findings (uploaded docs / LlamaIndex)          [NOT BUILT]
+  Source citations throughout                             [BUILT]
+  Pre-ship eval gate                                      [BUILT]
+
+
+--------------------------------------------------------------------------------
+6. 30-DAY PLAN — WHERE YOU ARE
+--------------------------------------------------------------------------------
+
+  Week 1 — Data + backend skeleton, calculators, Docker     [DONE]
+  Week 2 — AI orchestration, tool calling, structured JSON  [DONE]
+  Week 3 — Frontend search, report, Q&A, print-to-PDF       [MOSTLY DONE]
+  Week 4 — Evals + polish (30–50 cases, demo, AWS deploy)   [IN PROGRESS]
+           → 6 eval checks live; expand fixtures next
+           → AWS deploy + real PDF still open
+
+
+--------------------------------------------------------------------------------
+7. HOW TO RUN (QUICK REFERENCE)
+--------------------------------------------------------------------------------
+
+  Prerequisites: Docker Desktop running; .env at repo root with at least:
+    RENTCAST_API_KEY=...
+    OPENAI_API_KEY=...          # or ANTHROPIC_API_KEY=...
+
+  Start:
+    cd /path/to/propscout-pro
+    docker compose up --build
+
+  Open:
+    http://localhost:3000          # HouseFax UI
+    http://localhost:8000/docs     # API Swagger
+
+  Stop: Ctrl+C in the compose terminal
+
+
+--------------------------------------------------------------------------------
+8. ONE-LINE SUMMARY
+--------------------------------------------------------------------------------
+
+  BUILT: Full local MVP — address → RentCast/Census/FRED/FEMA data → deterministic
+         underwriting tools → LLM narrative with citations → eval gate → UI + Q&A.
+
+  NEXT:  Bigger eval dataset, PostGIS/pgvector wiring, real PDF + S3, AWS deploy,
+         then document-intelligence (LlamaIndex) as a separate module.
+
+================================================================================
+  End of HOUSEFAX_STATUS.txt
+================================================================================

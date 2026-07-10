@@ -118,6 +118,7 @@ class ToolCallRecord(BaseModel):
 class Report(BaseModel):
     report_id: str
     generated_at: str
+    intent: str = "buyer"
     disclaimer: str = (
         "HouseFax is a decision-support tool, not financial, legal, or real-estate advice."
     )
