@@ -32,13 +32,19 @@ export default function QAPanel({ reportId }: { reportId: string }) {
   }
 
   return (
-    <section className="card no-print" style={{ marginTop: 18 }}>
+    <section className="report-section appendix no-print" style={{ marginTop: 0 }}>
       <h2>Ask a follow-up</h2>
-      <div className="qa-thread">
+      <div className="qa-log">
         {thread.map((ex, i) => (
-          <div key={i} style={{ display: "contents" }}>
-            <div className="qa-q">{ex.question}</div>
-            <div className="qa-a">{ex.answer}</div>
+          <div className="qa-entry" key={i}>
+            <div className="qa-line qa-line-q">
+              <span className="qa-tag">Q</span>
+              <p>{ex.question}</p>
+            </div>
+            <div className="qa-line qa-line-a">
+              <span className="qa-tag">A</span>
+              <p>{ex.answer}</p>
+            </div>
           </div>
         ))}
       </div>

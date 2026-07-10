@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import Image from "next/image";
 import { analyze } from "@/lib/api";
 import Link from "next/link";
 
@@ -84,17 +83,6 @@ function SearchInner() {
 
   return (
     <>
-      <div className="search-hero no-print">
-        <Image
-          src="/hero-street.jpg"
-          alt=""
-          fill
-          className="search-hero-img"
-          sizes="100vw"
-          priority
-        />
-        <div className="search-hero-shade" />
-      </div>
       <section className="search-card">
         <h1>Analyze a property</h1>
         <p className="sub">

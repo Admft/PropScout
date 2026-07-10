@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -44,15 +43,6 @@ export default function WelcomePage() {
 
   return (
     <div className="auth-shell">
-      <Image
-        src="/neighborhood-mood.jpg"
-        alt=""
-        fill
-        className="auth-shell-bg"
-        sizes="100vw"
-        priority
-      />
-      <div className="auth-shell-shade" />
       <section className="auth-card">
         <h1>Welcome — how will you use HouseFax?</h1>
         <p className="sub">

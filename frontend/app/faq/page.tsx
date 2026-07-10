@@ -41,6 +41,9 @@ export default function FaqPage() {
               aria-expanded={open === i}
               onClick={() => setOpen(open === i ? null : i)}
             >
+              <span className="acc-tab" aria-hidden="true">
+                {open === i ? "–" : "+"}
+              </span>
               {item.q}
             </button>
             {open === i && <p className="acc-a">{item.a}</p>}

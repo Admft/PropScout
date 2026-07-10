@@ -82,7 +82,7 @@ export default function ReportDocumentsPage() {
             <div>
               <strong>{d.name}</strong>
               <p className="muted-sm">
-                {d.doc_type} · <span className={`badge muted`}>{d.status}</span>
+                {d.doc_type} · <span className="ledger-tag">{d.status}</span>
               </p>
             </div>
             {d.flags.length > 0 && (

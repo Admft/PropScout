@@ -1,4 +1,7 @@
-import type { Report, Verdict } from "@/lib/types";
+"use client";
+
+import type { Report } from "@/lib/types";
+import Stamp from "@/components/Stamp";
 
 const usd = (n: number | null | undefined, digits = 0) =>
   n == null
@@ -10,12 +13,6 @@ const usd = (n: number | null | undefined, digits = 0) =>
       });
 
 const pct = (n: number | null | undefined) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
-
-const badgeClass: Record<Verdict, string> = {
-  "Strong Candidate": "strong",
-  "Cautious Buy": "cautious",
-  Pass: "pass",
-};
 
 /** Render "[source:id]" citations as chips. */
 function Narrative({ text }: { text: string }) {
@@ -41,20 +38,34 @@ export default function ReportView({ report }: { report: Report }) {
   const im = report.investment_model;
   const ca = report.comp_analysis;
 
+  const generatedTs = new Date(report.generated_at).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
   return (
     <div className="report">
+      <div className="report-masthead no-print">
+        <span>
+          HOUSEFAX &nbsp;·&nbsp; <strong>{report.property_facts.address}</strong>
+        </span>
+        <span>#{report.report_id}</span>
+      </div>
+
       <div className="report-actions no-print">
         <button className="secondary" onClick={() => window.print()}>
           Export PDF
         </button>
       </div>
 
-      <section className="card">
+      <section className="report-section">
         <div className="verdict-row">
-          <span className={`badge ${badgeClass[v.verdict]}`}>{v.verdict}</span>
-          <span className="badge muted">confidence: {v.confidence}</span>
+          <Stamp variant="verdict" text={v.verdict} timestamp={generatedTs} />
+        </div>
+        <div className="verdict-row" style={{ marginTop: -6 }}>
+          <span className="ledger-tag">confidence: {v.confidence}</span>
           {report.eval_passed === false && (
-            <span className="badge pass">quality checks flagged this report</span>
+            <span className="ledger-tag warn">quality checks flagged this report</span>
           )}
         </div>
         <Narrative text={v.summary} />
@@ -68,7 +79,7 @@ export default function ReportView({ report }: { report: Report }) {
         </div>
       </section>
 
-      <section className="card">
+      <section className="report-section">
         <h2>Property facts — {report.property_facts.address}</h2>
         <div className="kv">
           <Item k="Type" v={report.property_facts.property_type ?? "—"} />
@@ -94,7 +105,7 @@ export default function ReportView({ report }: { report: Report }) {
       </section>
 
       {pm && (
-        <section className="card">
+        <section className="report-section">
           <h2>Payment model</h2>
           <div className="kv">
             <Item k="Purchase price" v={usd(pm.purchase_price)} />
@@ -108,7 +119,7 @@ export default function ReportView({ report }: { report: Report }) {
       )}
 
       {im && (
-        <section className="card">
+        <section className="report-section">
           <h2>Investment model</h2>
           <div className="kv">
             <Item k="Rent estimate / mo" v={usd(im.monthly_rent_estimate)} />
@@ -121,7 +132,7 @@ export default function ReportView({ report }: { report: Report }) {
         </section>
       )}
 
-      <section className="card">
+      <section className="report-section">
         <h2>Comparable sales</h2>
         {ca.narrative && <Narrative text={ca.narrative} />}
         <table>
@@ -157,7 +168,7 @@ export default function ReportView({ report }: { report: Report }) {
         )}
       </section>
 
-      <section className="card">
+      <section className="report-section">
         <h2>Neighborhood</h2>
         <div className="kv" style={{ marginBottom: 12 }}>
           <Item k="Median household income" v={usd(report.neighborhood.median_household_income)} />
@@ -166,7 +177,7 @@ export default function ReportView({ report }: { report: Report }) {
         <Narrative text={report.neighborhood.narrative} />
       </section>
 
-      <section className="card">
+      <section className="report-section">
         <h2>Risk flags</h2>
         {report.risk_flags.map((r, i) => (
           <div className="risk" key={i}>
@@ -178,7 +189,7 @@ export default function ReportView({ report }: { report: Report }) {
         ))}
       </section>
 
-      <section className="card">
+      <section className="report-section">
         <h2>Questions to ask your agent</h2>
         <ul className="questions">
           {report.questions_to_ask.map((q, i) => (
@@ -187,7 +198,7 @@ export default function ReportView({ report }: { report: Report }) {
         </ul>
       </section>
 
-      <section className="card sources">
+      <section className="report-section sources appendix">
         <h2>Sources</h2>
         {report.sources.map((s) => (
           <div key={s.id}>
@@ -210,7 +221,7 @@ function Item({
   highlight?: boolean;
 }) {
   return (
-    <div className="item" style={highlight ? { outline: "2px solid var(--accent)" } : undefined}>
+    <div className={highlight ? "item highlight" : "item"}>
       <div className="k">{k}</div>
       <div className="v">{v}</div>
     </div>

@@ -7,6 +7,7 @@ import { getReport } from "@/lib/api";
 import type { Report } from "@/lib/types";
 import ReportView from "@/components/ReportView";
 import QAPanel from "@/components/QAPanel";
+import Stamp from "@/components/Stamp";
 
 export default function ReportPage() {
   const params = useParams();
@@ -41,6 +42,9 @@ export default function ReportPage() {
   if (error || !report) {
     return (
       <section className="page-card">
+        <div className="verdict-row">
+          <Stamp variant="failed" text="Not on file" size="sm" />
+        </div>
         <h1>Report unavailable</h1>
         <p className="sub">{error ?? "Not found"}</p>
         <Link href="/search">Run a new analysis →</Link>

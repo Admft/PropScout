@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { DEMO_REPORTS } from "@/lib/demo-data";
+import Stamp from "@/components/Stamp";
 
 export default function DashboardPage() {
   return (
@@ -16,27 +17,27 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      <div className="report-grid">
+      <div className="case-list">
         {DEMO_REPORTS.map((r) => (
-          <article key={r.id} className="report-tile">
-            <div className="tile-top">
-              <span className={`badge ${r.status === "Ready" ? "strong" : "pass"}`}>
-                {r.status}
-              </span>
-              {r.verdict && <span className="badge muted">{r.verdict}</span>}
+          <article key={r.id} className="case-row">
+            <Stamp variant={r.status === "Ready" ? "ready" : "failed"} text={r.status} size="sm" />
+            <div className="case-main">
+              <h2>{r.address}</h2>
+              <p className="case-when">
+                {new Date(r.created_at).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </p>
             </div>
-            <h2>{r.address}</h2>
-            <p className="muted-sm">
-              {new Date(r.created_at).toLocaleString(undefined, {
-                dateStyle: "medium",
-                timeStyle: "short",
-              })}
-            </p>
-            {r.status === "Ready" ? (
-              <Link href={`/report/${r.id}`}>Open report →</Link>
-            ) : (
-              <span className="muted-sm">Generation failed — credits were not charged.</span>
-            )}
+            {r.verdict && <span className="case-verdict">{r.verdict}</span>}
+            <div className="case-action">
+              {r.status === "Ready" ? (
+                <Link href={`/report/${r.id}`}>Open report →</Link>
+              ) : (
+                <span className="muted-sm">Generation failed — credits were not charged.</span>
+              )}
+            </div>
           </article>
         ))}
       </div>

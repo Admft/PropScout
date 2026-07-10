@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 
 const links = [
@@ -22,12 +21,13 @@ export default function SiteNav() {
     >
       <div className="container header-row">
         <Link href="/" className="logo logo-with-mark">
-          <Image
-            src="/aerial-roofs.jpg"
+          <img
+            src="/logo.png"
             alt=""
-            width={28}
-            height={28}
-            className="logo-mark"
+            className="logo-seal"
+            width={24}
+            height={24}
+            aria-hidden="true"
           />
           House<span className="logo-accent">Fax</span>
         </Link>
