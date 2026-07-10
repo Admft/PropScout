@@ -192,7 +192,7 @@ export default function LandingPage() {
       <LandingEffects />
 
       <section className="hero-bleed" aria-labelledby="hero-headline">
-        <div className="hero-bleed-media">
+        <div className="hero-bleed-media" data-parallax>
           <Image
             src="/hero-street.jpg"
             alt="Tree-lined suburban residential street at golden hour"

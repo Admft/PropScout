@@ -743,14 +743,17 @@ button.secondary:hover {
 
 .hero-bleed-media {
   position: absolute;
-  inset: 0;
+  inset: -6% 0 -6%;
   z-index: 0;
+  will-change: transform;
+  transform: scale(1.06);
+  transform-origin: center 35%;
 }
 
 .hero-bleed-img {
   object-fit: cover;
-  /* Bias toward the top so sky sits under the transparent nav */
-  object-position: center 22%;
+  /* Slight nudge from 40% toward the sky — keep street framing intact */
+  object-position: center 34%;
 }
 
 .hero-bleed-shade {
@@ -1467,6 +1470,7 @@ button.secondary:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hero-bleed-media,
   [data-hero-enter],
   .lens-item,
   .how-step,

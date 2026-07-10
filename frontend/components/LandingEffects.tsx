@@ -3,8 +3,11 @@
 import { useEffect } from "react";
 
 /**
- * Progressive enhancement for landing scroll reveals only.
- * (Hero parallax / continuous zoom removed — they were janky on large images.)
+ * Progressive enhancement for the landing page:
+ * - marks the document for CSS reveal states
+ * - IntersectionObserver scroll reveals
+ * - light hero parallax (transform only; content stays in HTML)
+ * Honors prefers-reduced-motion.
  */
 export default function LandingEffects() {
   useEffect(() => {
@@ -32,7 +35,25 @@ export default function LandingEffects() {
     );
     reveals.forEach((el) => io.observe(el));
 
-    return () => io.disconnect();
+    const media = document.querySelector<HTMLElement>("[data-parallax]");
+    let raf = 0;
+    function onScroll() {
+      if (!media) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const y = window.scrollY;
+        const shift = Math.min(y * 0.18, 96);
+        media.style.transform = `translate3d(0, ${shift}px, 0) scale(1.06)`;
+      });
+    }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      io.disconnect();
+      window.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
   }, []);
 
   return null;
