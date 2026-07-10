@@ -249,6 +249,47 @@ NEVER (wrong tool at this product's scale)
   NEXT:  Bigger eval dataset, PostGIS/pgvector wiring, real PDF + S3, AWS deploy,
          then document-intelligence (LlamaIndex) as a separate module.
 
+--------------------------------------------------------------------------------
+9. FRONTEND ROUTES (added July 2026)
+--------------------------------------------------------------------------------
+
+  AUTH
+    /api/auth/[...nextauth]   NextAuth Google OAuth + session
+    /login  /signup           Unified Google sign-in + legal note
+    /welcome                  Investor / Agent / Homebuyer onboarding
+    /settings/profile         Role, name, email prefs, default assumptions
+
+  BILLING
+    /pricing                  Pay-per-report + packs + Pro → Stripe Checkout
+    /api/billing/checkout     Creates Stripe Checkout Session
+    /api/billing/portal       Stripe Customer Portal session
+    /api/webhooks/stripe      Webhook listener (credits/subscription hook)
+    /settings/billing         Open Stripe portal button
+
+  CORE APP
+    /dashboard                Past reports grid (demo data until user_id wired)
+    /search                   Address + assumptions, credit check, progress UI
+    /report/[address_id]      Saved report + embedded Q&A panel
+    /report/[address_id]/documents   Upload inspection/disclosure/HOA docs
+
+  MARKETING
+    /                         Landing hero → /search CTA
+    /sample-report/[slug]     Static sample ($0 API)
+    /faq                      Accordion objection handling
+
+  LEGAL
+    /terms  /privacy  /support
+
+  ADMIN
+    /admin/evals              Eval pass rates + flagged reports
+    /admin/costs              RentCast spend + Redis hit rate
+
+  BOILERPLATE
+    not-found.tsx  error.tsx
+
+  NOTE: Google OAuth + Stripe activate when env vars are set; without them,
+  pages remain browsable in demo mode (localStorage credits/profile).
+
 ================================================================================
   End of HOUSEFAX_STATUS.txt
 ================================================================================

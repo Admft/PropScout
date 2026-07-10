@@ -62,3 +62,46 @@ CREATE TABLE IF NOT EXISTS doc_chunks (
 
 CREATE INDEX IF NOT EXISTS doc_chunks_embedding_idx
     ON doc_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Auth / billing (NextAuth + Stripe). Wired by the app as those stacks go live.
+CREATE TABLE IF NOT EXISTS users (
+    id              TEXT PRIMARY KEY,           -- NextAuth user / provider subject
+    email           TEXT UNIQUE NOT NULL,
+    name            TEXT,
+    role            TEXT CHECK (role IN ('investor', 'agent', 'homebuyer')),
+    email_opt_in    BOOLEAN NOT NULL DEFAULT true,
+    default_down_payment_pct NUMERIC DEFAULT 0.20,
+    default_rate_assumption  NUMERIC,
+    stripe_customer_id TEXT UNIQUE,
+    credits         INTEGER NOT NULL DEFAULT 0,
+    subscription_status TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE reports
+    ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS reports_user_id_idx ON reports (user_id);
+
+CREATE TABLE IF NOT EXISTS property_documents (
+    id            BIGSERIAL PRIMARY KEY,
+    report_id     TEXT REFERENCES reports(id) ON DELETE CASCADE,
+    property_id   BIGINT REFERENCES properties(id) ON DELETE CASCADE,
+    user_id       TEXT REFERENCES users(id) ON DELETE CASCADE,
+    file_name     TEXT NOT NULL,
+    doc_type      TEXT NOT NULL,  -- inspection | disclosure | hoa | other
+    status        TEXT NOT NULL DEFAULT 'queued',  -- queued | processing | ready | failed
+    storage_url   TEXT,
+    findings      JSONB DEFAULT '[]'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS credit_ledger (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    delta         INTEGER NOT NULL,
+    reason        TEXT NOT NULL,  -- purchase | report_spend | refund | grant
+    stripe_event_id TEXT UNIQUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
