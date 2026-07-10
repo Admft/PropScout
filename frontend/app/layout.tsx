@@ -26,10 +26,31 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://housefax.ai";
+
 export const metadata: Metadata = {
-  title: "HouseFax — due-diligence reports for any home",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: "HouseFax — due-diligence reports for any home",
+    template: "%s · HouseFax",
+  },
   description:
     "AI-generated, source-cited property analysis. A decision-support tool — not financial, legal, or real-estate advice.",
+  applicationName: "HouseFax",
+  authors: [{ name: "HouseFax" }],
+  creator: "HouseFax",
+  openGraph: {
+    type: "website",
+    siteName: "HouseFax",
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -48,20 +69,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </svg>
         <Providers>
           <SiteNav />
-          <main className="page-main">{children}</main>
-          <footer className="site-footer no-print">
+          <main id="main-content" className="page-main">
+            {children}
+          </main>
+          <footer className="site-footer no-print" aria-label="Site">
             <div className="container footer-grid">
               <p>
                 HouseFax is a decision-support tool, not financial, legal, or real-estate advice.
                 AVM estimates are models — not appraisals.
               </p>
-              <div className="footer-links">
+              <nav className="footer-links" aria-label="Footer">
                 <Link href="/faq">FAQ</Link>
                 <Link href="/pricing">Pricing</Link>
                 <Link href="/terms">Terms</Link>
                 <Link href="/privacy">Privacy</Link>
                 <Link href="/support">Support</Link>
-              </div>
+              </nav>
             </div>
           </footer>
         </Providers>
